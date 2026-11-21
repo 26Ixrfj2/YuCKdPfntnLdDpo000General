@@ -1400,8 +1400,8 @@
 // ==UserScript==
 // @name         Anime 365 Crunchyroll Franchise Episodes
 // @namespace    http://tampermonkey.net
-// @version      3.0
-// @description  Полноширинный блок серий Crunchyroll под постером с Cache API, очередью загрузки и поддержкой episodes.json
+// @version      6.3
+// @description  Мгновенная загрузка серий франшиз с постоянным индексом репозитория, крупной типографикой и инфо-панелью
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        GM_xmlhttpRequest
@@ -1415,28 +1415,30 @@
 
     var USER = 'Ruroll';
     var REPO = 'WB35RWQwFRFijt000IMG';
-    var FOLDER_CACHE_KEY = 'cr_franchise_folder_map_v3';
-    var EXT_CACHE_KEY = 'cr_franchise_ext_map_v3';
-    var THUMB_CACHE_NAME = 'cr-franchise-thumbs-v1';
-    var CACHE_TTL = 1000 * 60 * 60 * 24; // 24 часа
+    var FOLDER_CACHE_KEY = 'cr_franchise_folder_map_v6';
+    var EXT_CACHE_KEY = 'cr_franchise_ext_map_v6';
+    var WATCHED_CACHE_KEY = 'cr_franchise_watched_v1';
+    var THUMB_CACHE_NAME = 'cr-ep-thumbs-v2';
 
     var PROTO = 'https' + '://';
+    var API_TREE_URL = PROTO + 'api.github' + '.com/repos/' + USER + '/' + REPO + '/git/trees/main?recursive=1';
     var GITHUB_ROOT_URL = PROTO + 'github' + '.com/' + USER + '/' + REPO + '/tree/main/Franchise';
     var BASE_STATICALLY = PROTO + 'cdn' + '.statically' + '.io/gh/' + USER + '/' + REPO + '/main/';
     var BASE_RAWGH = PROTO + 'raw' + '.githubusercontent' + '.com/' + USER + '/' + REPO + '/main/';
 
     var folderCache = null;
     var extCache = null;
+    var watchedCache = null;
     var metaCache = {};
-    var searchingForId = {};
-    var notFoundIds = {};
-    var memBlobUrlCache = {};
+    var indexPromise = null;
+    var memBlobCache = {};
+    var renderGen = 0;
 
     function getAnimeId() {
         var path = window.location.pathname.replace(/\/+$/, '');
         var segments = path.split('/').filter(Boolean);
-        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
-        var slug = segments.at(1);
+        if (segments.length !== 2 || segments[0] !== 'catalog') return null;
+        var slug = segments[1];
         var dashIdx = slug.lastIndexOf('-');
         if (dashIdx === -1) return null;
         var id = slug.slice(dashIdx + 1);
@@ -1450,7 +1452,7 @@
                 var raw = GM_getValue(FOLDER_CACHE_KEY, '');
                 if (raw) {
                     var parsed = JSON.parse(raw);
-                    if (parsed && parsed.ts && (Date.now() - parsed.ts < CACHE_TTL) && parsed.folders) {
+                    if (parsed && parsed.folders && Object.keys(parsed.folders).length > 0) {
                         folderCache = parsed.folders;
                         return folderCache;
                     }
@@ -1461,23 +1463,21 @@
         return folderCache;
     }
 
-    function saveFolderMapping(animeId, repoFolderPath) {
-        var map = loadSavedFolders();
-        map[animeId] = repoFolderPath;
+    function saveAllFolders(newMap) {
+        folderCache = Object.assign(loadSavedFolders(), newMap);
         try {
             if (typeof GM_setValue === 'function') {
-                GM_setValue(FOLDER_CACHE_KEY, JSON.stringify({ ts: Date.now(), folders: map }));
+                GM_setValue(FOLDER_CACHE_KEY, JSON.stringify({ ts: Date.now(), folders: folderCache }));
             }
         } catch (e) {}
+        return folderCache;
     }
 
     function getPreferredExt(animeId) {
         if (!extCache) {
-            try {
-                extCache = JSON.parse(GM_getValue(EXT_CACHE_KEY, '{}') || '{}');
-            } catch (e) { extCache = {}; }
+            try { extCache = JSON.parse(GM_getValue(EXT_CACHE_KEY, '{}') || '{}'); } catch (e) { extCache = {}; }
         }
-        return extCache[animeId] || null;
+        return extCache[animeId] || '.png';
     }
 
     function savePreferredExt(animeId, ext) {
@@ -1485,31 +1485,52 @@
         if (extCache[animeId] === ext) return;
         extCache[animeId] = ext;
         try {
-            if (typeof GM_setValue === 'function') {
-                GM_setValue(EXT_CACHE_KEY, JSON.stringify(extCache));
-            }
+            if (typeof GM_setValue === 'function') GM_setValue(EXT_CACHE_KEY, JSON.stringify(extCache));
         } catch (e) {}
     }
 
-    function readThumbCache(cacheKey) {
-        if (memBlobUrlCache[cacheKey]) return Promise.resolve(memBlobUrlCache[cacheKey]);
+    function getWatchedMap() {
+        if (!watchedCache) {
+            try { watchedCache = JSON.parse(GM_getValue(WATCHED_CACHE_KEY, '{}') || '{}'); } catch (e) { watchedCache = {}; }
+        }
+        return watchedCache;
+    }
+
+    function isEpisodeWatched(animeId, code) {
+        var map = getWatchedMap();
+        return !!(map[animeId] && map[animeId][code]);
+    }
+
+    function toggleEpisodeWatched(animeId, code) {
+        var map = getWatchedMap();
+        if (!map[animeId]) map[animeId] = {};
+        map[animeId][code] = !map[animeId][code];
+        if (!map[animeId][code]) delete map[animeId][code];
+        try {
+            if (typeof GM_setValue === 'function') GM_setValue(WATCHED_CACHE_KEY, JSON.stringify(map));
+        } catch (e) {}
+        return !!map[animeId][code];
+    }
+
+    function getCachedThumbUrl(cacheKey) {
+        if (memBlobCache[cacheKey]) return Promise.resolve(memBlobCache[cacheKey]);
         if (!('caches' in window)) return Promise.resolve(null);
         return caches.open(THUMB_CACHE_NAME).then(function(cache) {
             return cache.match(cacheKey).then(function(resp) {
                 if (!resp) return null;
                 return resp.blob().then(function(blob) {
                     if (!blob || blob.size < 100) return null;
-                    var url = URL.createObjectURL(blob);
-                    memBlobUrlCache[cacheKey] = url;
-                    return url;
+                    var u = URL.createObjectURL(blob);
+                    memBlobCache[cacheKey] = u;
+                    return u;
                 });
             });
         }).catch(function() { return null; });
     }
 
-    function writeThumbCache(cacheKey, blob) {
-        var url = URL.createObjectURL(blob);
-        memBlobUrlCache[cacheKey] = url;
+    function saveThumbToCache(cacheKey, blob) {
+        var u = URL.createObjectURL(blob);
+        memBlobCache[cacheKey] = u;
         if ('caches' in window) {
             caches.open(THUMB_CACHE_NAME).then(function(cache) {
                 cache.put(cacheKey, new Response(blob, {
@@ -1517,7 +1538,7 @@
                 }));
             }).catch(function() {});
         }
-        return url;
+        return u;
     }
 
     window.addEventListener('cr-reset-page-cache', function(e) {
@@ -1525,8 +1546,8 @@
         folderCache = {};
         extCache = {};
         metaCache = {};
-        searchingForId = {};
-        notFoundIds = {};
+        indexPromise = null;
+        renderGen++;
         try {
             if (typeof GM_setValue === 'function') {
                 GM_setValue(FOLDER_CACHE_KEY, '');
@@ -1538,18 +1559,16 @@
             caches.open(THUMB_CACHE_NAME).then(function(cache) {
                 cache.keys().then(function(reqs) {
                     reqs.forEach(function(r) {
-                        if (r.url.indexOf('/' + resetId + '/') !== -1) {
-                            cache.delete(r);
-                        }
+                        if (r.url.indexOf('/' + resetId + '/') !== -1) cache.delete(r);
                     });
                 });
             }).catch(function() {});
         }
 
-        Object.keys(memBlobUrlCache).forEach(function(k) {
+        Object.keys(memBlobCache).forEach(function(k) {
             if (!resetId || k.indexOf('/' + resetId + '/') !== -1) {
-                URL.revokeObjectURL(memBlobUrlCache[k]);
-                delete memBlobUrlCache[k];
+                URL.revokeObjectURL(memBlobCache[k]);
+                delete memBlobCache[k];
             }
         });
 
@@ -1557,18 +1576,20 @@
         if (oldBlock) oldBlock.remove();
     });
 
-    function fetchText(url) {
+    function fetchText(url, timeoutMs) {
         return new Promise(function(resolve) {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: url,
-                timeout: 15000,
-                onload: function(res) {
-                    resolve(res.status === 200 ? (res.responseText || '') : '');
-                },
-                onerror: function() { resolve(''); },
-                ontimeout: function() { resolve(''); }
-            });
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: url,
+                    timeout: timeoutMs || 25000,
+                    onload: function(res) { resolve(res.status === 200 ? (res.responseText || '') : ''); },
+                    onerror: function() { resolve(''); },
+                    ontimeout: function() { resolve(''); }
+                });
+            } catch (e) {
+                resolve('');
+            }
         });
     }
 
@@ -1580,7 +1601,7 @@
             var href = a.getAttribute('href') || '';
             var idx = href.indexOf('/tree/main/');
             if (idx === -1) return;
-            var relEncoded = href.slice(idx + '/tree/main/'.length).split('?').at(0).split('#').at(0);
+            var relEncoded = href.slice(idx + '/tree/main/'.length).split('?')[0].split('#')[0];
             try {
                 var decoded = decodeURIComponent(relEncoded);
                 if (links.indexOf(decoded) === -1) links.push(decoded);
@@ -1589,382 +1610,517 @@
         return links;
     }
 
-    function findTitleFolderInGitHub(animeId) {
-        var saved = loadSavedFolders();
-        if (saved[animeId]) return Promise.resolve(saved[animeId]);
-        if (notFoundIds[animeId]) return Promise.resolve(null);
-        if (searchingForId[animeId]) return searchingForId[animeId];
+    function buildFullFranchiseIndex() {
+        if (indexPromise) return indexPromise;
 
-        searchingForId[animeId] = fetchText(GITHUB_ROOT_URL).then(function(rootHtml) {
-            var franchiseDirs = extractTreeLinks(rootHtml).filter(function(p) {
-                return p.split('/').length === 2;
-            });
-
-            if (!franchiseDirs.length) return null;
-
-            var idx = 0;
-            function scanNextFranchise() {
-                if (idx >= franchiseDirs.length) return Promise.resolve(null);
-                var fDir = franchiseDirs.at(idx++);
-                var encodedUrl = PROTO + 'github' + '.com/' + USER + '/' + REPO + '/tree/main/' +
-                    fDir.split('/').map(encodeURIComponent).join('/');
-
-                return fetchText(encodedUrl).then(function(subHtml) {
-                    var subPaths = extractTreeLinks(subHtml);
-                    var matched = null;
-
-                    subPaths.forEach(function(sp) {
-                        var folderName = sp.split('/').pop() || '';
-                        var m = folderName.match(/^(\d+)(?:\s|\[|$)/);
-                        if (m) {
-                            var foundId = m.at(1);
-                            saveFolderMapping(foundId, sp);
-                            if (foundId === animeId) matched = sp;
-                        }
-                    });
-
-                    if (matched) return matched;
-                    return scanNextFranchise();
-                });
+        indexPromise = fetchText(API_TREE_URL, 25000).then(function(apiText) {
+            var foundMap = {};
+            if (apiText) {
+                try {
+                    var data = JSON.parse(apiText);
+                    if (data && Array.isArray(data.tree)) {
+                        data.tree.forEach(function(node) {
+                            if (node.type === 'tree' && node.path && node.path.indexOf('Franchise/') === 0) {
+                                var parts = node.path.split('/');
+                                if (parts.length === 3) {
+                                    var m = parts[2].match(/^(\d+)(?:\s|\[|$)/);
+                                    if (m) foundMap[m[1]] = node.path;
+                                }
+                            }
+                        });
+                    }
+                } catch (e) {}
             }
 
-            return scanNextFranchise();
-        }).then(function(result) {
-            delete searchingForId[animeId];
-            if (!result) notFoundIds[animeId] = true;
-            return result;
-        });
+            if (Object.keys(foundMap).length > 0) {
+                return saveAllFolders(foundMap);
+            }
 
-        return searchingForId[animeId];
-    }
+            return fetchText(GITHUB_ROOT_URL, 25000).then(function(rootHtml) {
+                var franchiseDirs = extractTreeLinks(rootHtml).filter(function(p) {
+                    return p.split('/').length === 2;
+                });
+                if (!franchiseDirs.length) return {};
 
-    function loadEpisodesMetadata(animeId, folderPath) {
-        if (metaCache[animeId]) return Promise.resolve(metaCache[animeId]);
-        var encodedJson = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.json';
-        return fetchText(BASE_STATICALLY + encodedJson).then(function(txt) {
-            if (!txt) return fetchText(BASE_RAWGH + encodedJson);
-            return txt;
-        }).then(function(txt) {
-            try {
-                if (txt && txt.trim().startsWith('{')) {
-                    metaCache[animeId] = JSON.parse(txt);
-                    return metaCache[animeId];
-                }
-            } catch (e) {}
-            metaCache[animeId] = {};
-            return {};
-        });
-    }
+                return Promise.all(franchiseDirs.map(function(fDir) {
+                    var encodedUrl = PROTO + 'github' + '.com/' + USER + '/' + REPO + '/tree/main/' +
+                        fDir.split('/').map(encodeURIComponent).join('/');
+                    return fetchText(encodedUrl, 25000).then(function(subHtml) {
+                        var subPaths = extractTreeLinks(subHtml);
+                        var localMap = {};
+                        subPaths.forEach(function(sp) {
+                            var folderName = sp.split('/').pop() || '';
+                            var m = folderName.match(/^(\d+)(?:\s|\[|$)/);
+                            if (m) localMap[m[1]] = sp;
+                            });
+return localMap;
+});
+})).then(function(maps) {
+var merged = {};
+maps.forEach(function(m) { Object.assign(merged, m); });
+if (Object.keys(merged).length > 0) {
+return saveAllFolders(merged);
+}
+return {};
+});
+});
+}).then(function(res) {
+indexPromise = null;
+return res;
+}).catch(function() {
+indexPromise = null;
+return {};
+});
+return indexPromise;
+}
+function findTitleFolder(animeId) {
+var saved = loadSavedFolders();
+if (saved[animeId]) return Promise.resolve(saved[animeId]);
+return buildFullFranchiseIndex().then(function(map) {
+return (map && map[animeId]) || null;
+});
+}
+function parseEpisodesScriptText(rawText) {
+if (!rawText) return {};
+var trimmed = rawText.trim();
+try {
+if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+return JSON.parse(trimmed);
+}
+} catch (e) {}
+var firstBrace = trimmed.indexOf('{');
+var lastBrace = trimmed.lastIndexOf('}');
+if (firstBrace !== -1 && lastBrace > firstBrace) {
+var objLiteral = trimmed.slice(firstBrace, lastBrace + 1);
+try {
+return (new Function('return (' + objLiteral + ');'))();
+} catch (e) {}
+}
+return {};
+}
+function loadEpisodesMetadata(animeId, folderPath) {
+if (metaCache[animeId]) return Promise.resolve(metaCache[animeId]);
+var encodedJs = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.js';
+var encodedJson = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.json';
+return fetchText(BASE_STATICALLY + encodedJs, 12000)
+.then(function(txt) { return txt || fetchText(BASE_RAWGH + encodedJs, 12000); })
+.then(function(txt) { return txt || fetchText(BASE_STATICALLY + encodedJson, 12000); })
+.then(function(txt) { return txt || fetchText(BASE_RAWGH + encodedJson, 12000); })
+.then(function(txt) {
+var parsed = parseEpisodesScriptText(txt);
+metaCache[animeId] = (parsed && typeof parsed === 'object') ? parsed : {};
+return metaCache[animeId];
+}).catch(function() {
+metaCache[animeId] = {};
+return {};
+});
+}
     function ensureFranchiseStyles() {
         if (document.getElementById('cr-franchise-ep-style')) return;
         var st = document.createElement('style');
         st.id = 'cr-franchise-ep-style';
         st.textContent =
             '#cr-franchise-episodes-section {' +
-            '  display: block;' +
-            '  width: 100%;' +
-            '  background: #000000;' +
-            '  color: #ffffff;' +
-            '  padding: 28px 4.9% 44px 4.9%;' +
-            '  margin: 0 0 24px 0;' +
-            '  box-sizing: border-box;' +
-            '  font-family: Roboto, Lato, sans-serif;' +
-            '  border-bottom: 1px solid rgba(255, 255, 255, 0.12);' +
-            '  clear: both;' +
+            '  display: block !important; width: 100% !important; background: #000000 !important; color: #ffffff !important;' +
+            '  padding: 28px 4.9% 64px 4.9% !important; margin: 0 0 24px 0 !important; box-sizing: border-box !important;' +
+            '  font-family: Roboto, Lato, sans-serif !important; border-bottom: 1px solid rgba(255,255,255,0.12) !important; clear: both !important;' +
             '}' +
-            '.cr-ep-section-header {' +
-            '  font-size: 22px;' +
-            '  font-weight: 700;' +
-            '  color: #ffffff;' +
-            '  margin-bottom: 18px;' +
-            '  letter-spacing: 0.2px;' +
-            '}' +
-            '.cr-ep-grid {' +
-            '  display: grid;' +
-            '  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));' +
-            '  gap: 24px 18px;' +
-            '  width: 100%;' +
-            '}' +
-            '.cr-ep-card {' +
-            '  display: flex;' +
-            '  flex-direction: column;' +
-            '  text-decoration: none !important;' +
-            '  color: #ffffff !important;' +
-            '  background: #000000;' +
-            '  border-radius: 2px;' +
-            '}' +
-            '.cr-ep-card:hover .cr-ep-thumb-wrap {' +
-            '  outline: 2px solid #f47521;' +
-            '}' +
-            '.cr-ep-card:hover .cr-ep-title {' +
-            '  color: #f47521;' +
-            '}' +
-            '.cr-ep-thumb-wrap {' +
-            '  position: relative;' +
-            '  width: 100%;' +
-            '  aspect-ratio: 16 / 9;' +
-            '  background: #141519;' +
-            '  overflow: hidden;' +
-            '  border-radius: 2px;' +
-            '}' +
-            '.cr-ep-thumb {' +
-            '  display: block;' +
-            '  width: 100%;' +
-            '  height: 100%;' +
-            '  object-fit: cover;' +
-            '  opacity: 0;' +
-            '  transition: opacity 0.22s ease, transform 0.25s ease;' +
-            '}' +
-            '.cr-ep-thumb.is-ready {' +
-            '  opacity: 1;' +
-            '}' +
-            '.cr-ep-card:hover .cr-ep-thumb {' +
-            '  transform: scale(1.03);' +
-            '}' +
+            '.cr-ep-section-header { display: block !important; font-size: 24px !important; font-weight: 700 !important; color: #ffffff !important; margin-bottom: 20px !important; }' +
+            '.cr-ep-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)) !important; gap: 30px 20px !important; width: 100% !important; }' +
+            '.cr-ep-card { position: relative !important; display: flex !important; flex-direction: column !important; background: #000000 !important; overflow: visible !important; }' +
+            '.cr-ep-main-link { display: flex !important; flex-direction: column !important; text-decoration: none !important; color: #ffffff !important; }' +
+            '.cr-ep-thumb-wrap { position: relative !important; width: 100% !important; aspect-ratio: 16 / 10 !important; background: #141519 !important; overflow: hidden !important; }' +
+            '.cr-ep-thumb { display: block !important; width: 100% !important; height: 100% !important; object-fit: cover !important; transition: transform 0.25s ease, filter 0.22s ease !important; }' +
+            '.cr-ep-card:hover .cr-ep-thumb { transform: scale(1.04); filter: brightness(0.85); }' +
+
             '.cr-ep-duration {' +
-            '  position: absolute;' +
-            '  bottom: 6px;' +
-            '  right: 6px;' +
-            '  background: rgba(0, 0, 0, 0.82);' +
-            '  color: #ffffff;' +
-            '  font-size: 11px;' +
-            '  font-weight: 600;' +
-            '  padding: 2px 6px;' +
-            '  border-radius: 2px;' +
+            '  position: absolute !important; bottom: 8px !important; right: 8px !important;' +
+            '  background: rgba(0,0,0,0.88) !important; color: #ffffff !important;' +
+            '  font-size: 14px !important; font-weight: 700 !important; padding: 4px 9px !important;' +
+            '  z-index: 2 !important; letter-spacing: 0.4px !important; text-transform: uppercase !important;' +
             '}' +
+            '.cr-ep-watched-badge { position: absolute !important; top: 8px !important; left: 8px !important; background: rgba(0,0,0,0.88) !important; color: #66bb6a !important; font-size: 11px !important; font-weight: 700 !important; padding: 3px 8px !important; z-index: 2 !important; display: none; text-transform: uppercase !important; }' +
+            '.cr-ep-card.is-watched .cr-ep-watched-badge { display: inline-block !important; }' +
+            '.cr-ep-card.is-watched .cr-ep-thumb { opacity: 0.65; }' +
+
             '.cr-ep-play-badge {' +
-            '  position: absolute;' +
-            '  inset: 0;' +
-            '  display: flex;' +
-            '  align-items: center;' +
-            '  justify-content: center;' +
-            '  background: rgba(0, 0, 0, 0.28);' +
-            '  opacity: 0;' +
-            '  transition: opacity 0.18s ease;' +
+            '  position: absolute !important; inset: 0 !important; display: flex !important; align-items: center !important; justify-content: center !important;' +
+            '  opacity: 0; transition: opacity 0.2s ease !important; pointer-events: none !important; z-index: 4 !important;' +
             '}' +
-            '.cr-ep-card:hover .cr-ep-play-badge {' +
-            '  opacity: 1;' +
+            '.cr-ep-card:hover .cr-ep-play-badge { opacity: 1 !important; }' +
+            '.cr-ep-play-triangle {' +
+            '  width: 0 !important; height: 0 !important;' +
+            '  border-top: 20px solid transparent !important;' +
+            '  border-bottom: 20px solid transparent !important;' +
+            '  border-left: 34px solid #000000 !important;' +
+            '  margin-left: 6px !important;' +
+            '  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.65)) !important;' +
             '}' +
-            '.cr-ep-play-circle {' +
-            '  width: 44px;' +
-            '  height: 44px;' +
-            '  border-radius: 50%;' +
-            '  background: rgba(0, 0, 0, 0.78);' +
-            '  border: 2px solid #f47521;' +
-            '  color: #f47521;' +
-            '  display: flex;' +
-            '  align-items: center;' +
-            '  justify-content: center;' +
-            '  font-size: 16px;' +
-            '  padding-left: 2px;' +
+
+            '.cr-ep-bottom-bar { position: relative !important; display: flex !important; align-items: flex-start !important; justify-content: space-between !important; gap: 8px !important; padding: 12px 2px 6px 2px !important; min-height: 82px !important; }' +
+            '.cr-ep-base-meta { display: flex !important; flex-direction: column !important; gap: 5px !important; flex: 1 1 auto !important; min-width: 0 !important; }' +
+            '.cr-ep-num { display: block !important; font-size: 17px !important; font-weight: 700 !important; line-height: 1.25 !important; color: #b5b5b5 !important; }' +
+            '.cr-ep-base-title { display: -webkit-box !important; -webkit-line-clamp: 2 !important; -webkit-box-orient: vertical !important; overflow: hidden !important; font-size: 17px !important; font-weight: 700 !important; line-height: 1.3 !important; color: #ffffff !important; transition: color 0.15s ease !important; }' +
+            '.cr-ep-card:hover .cr-ep-base-title { color: #f47521 !important; }' +
+
+            '.cr-ep-menu-anchor { position: relative !important; align-self: flex-end !important; flex-shrink: 0 !important; z-index: 25 !important; }' +
+            '.cr-ep-dots-btn {' +
+            '  width: 36px !important; height: 36px !important; background: transparent !important; background-color: transparent !important;' +
+            '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
+            '  color: #a0a0a0 !important; font-size: 24px !important; line-height: 1 !important; cursor: pointer !important;' +
+            '  display: flex !important; align-items: center !important; justify-content: center !important;' +
+            '  opacity: 0; transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease !important;' +
             '}' +
-            '.cr-ep-meta {' +
-            '  padding: 8px 2px 2px 2px;' +
-            '  display: flex;' +
-            '  flex-direction: column;' +
-            '  gap: 4px;' +
+            '.cr-ep-card:hover .cr-ep-dots-btn, .cr-ep-dots-btn.is-active { opacity: 1 !important; }' +
+            '.cr-ep-dots-btn:hover { color: #ffffff !important; background: transparent !important; background-color: transparent !important; }' +
+            '.cr-ep-dots-btn.is-active, .cr-ep-dots-btn.is-active:hover { background: #2e7d32 !important; background-color: #2e7d32 !important; color: #ffffff !important; }' +
+
+            '.cr-ep-popup-menu {' +
+            '  position: absolute !important; right: 0 !important; top: 100% !important; margin-top: 0 !important;' +
+            '  background: #1f2229 !important; border: none !important; outline: none !important; box-shadow: 0 8px 24px rgba(0,0,0,0.95) !important;' +
+            '  border-radius: 0 !important; padding: 0 !important; min-width: 230px !important; display: none; z-index: 60 !important;' +
             '}' +
-            '.cr-ep-code {' +
-            '  font-size: 11px;' +
-            '  font-weight: 700;' +
-            '  letter-spacing: 0.5px;' +
-            '  text-transform: uppercase;' +
-            '  color: #a0a0a0;' +
+            '.cr-ep-popup-menu.is-open { display: block !important; }' +
+            '.cr-ep-popup-item {' +
+            '  width: 100% !important; background: transparent !important; background-color: transparent !important;' +
+            '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
+            '  color: #ffffff !important; text-align: left !important; padding: 12px 14px !important;' +
+            '  font-size: 13px !important; font-weight: 500 !important; cursor: pointer !important; font-family: inherit !important; display: block !important;' +
             '}' +
-            '.cr-ep-title {' +
-            '  font-size: 14px;' +
-            '  font-weight: 600;' +
-            '  line-height: 1.3;' +
-            '  color: #ffffff;' +
-            '  transition: color 0.15s ease;' +
+            '.cr-ep-popup-item:hover { background: #2e7d32 !important; background-color: #2e7d32 !important; color: #ffffff !important; }' +
+
+            '.cr-ep-neighbor-panel {' +
+            '  position: absolute !important; inset: 0 !important; background: #000000 !important; color: #ffffff !important;' +
+            '  padding: 16px !important; display: flex !important; flex-direction: column !important; align-items: flex-start !important;' +
+            '  justify-content: flex-start !important; z-index: 35 !important; pointer-events: none !important;' +
+            '  opacity: 0; transition: opacity 0.15s ease !important; box-sizing: border-box !important;' +
             '}' +
-            '.cr-ep-desc {' +
-            '  font-size: 12px;' +
-            '  line-height: 1.4;' +
-            '  color: #9e9e9e;' +
-            '  display: -webkit-box;' +
-            '  -webkit-line-clamp: 2;' +
-            '  -webkit-box-orient: vertical;' +
-            '  overflow: hidden;' +
-            '}';
+            '.cr-ep-neighbor-panel.is-visible { opacity: 1 !important; }' +
+            '.cr-ep-np-num { display: block !important; width: 100% !important; font-size: 18px !important; font-weight: 700 !important; color: #ffffff !important; line-height: 1.25 !important; margin: 0 0 4px 0 !important; }' +
+            '.cr-ep-np-title { display: block !important; width: 100% !important; font-size: 18px !important; font-weight: 700 !important; color: #ffffff !important; line-height: 1.25 !important; margin: 0 0 8px 0 !important; }' +
+            '.cr-ep-np-date-row { display: flex !important; align-items: center !important; gap: 6px !important; width: 100% !important; font-size: 13px !important; color: #9e9e9e !important; line-height: 1.2 !important; margin: 0 0 14px 0 !important; }' +
+            '.cr-ep-np-cal-ico { width: 14px !important; height: 14px !important; fill: #9e9e9e !important; flex-shrink: 0 !important; }' +
+            '.cr-ep-np-desc { display: -webkit-box !important; -webkit-line-clamp: 6 !important; -webkit-box-orient: vertical !important; overflow: hidden !important; width: 100% !important; font-size: 13px !important; line-height: 1.45 !important; color: #dcdcdc !important; margin: 0 !important; white-space: normal !important; }';
         document.head.appendChild(st);
     }
 
-    function detectEpisodeCode(labelText, href) {
+    function formatDurationUpper(rawDur) {
+        if (!rawDur) return '';
+        return String(rawDur).replace(/мин\.?/gi, 'МИН').trim().toUpperCase();
+    }
+
+    function detectEpisodeInfo(labelText, href) {
         var clean = labelText.replace(/play_circle_filled/gi, '').trim();
         if (/трейлер|trailer/i.test(clean) || /treyler/i.test(href || '')) {
-            return { code: null, cleanTitle: clean };
+            return null;
         }
         var numMatch = clean.match(/^(\d+)\s*серия/i) || (href || '').match(/\/(\d+)-seriya-/i);
         if (numMatch) {
-            return { code: 'E' + numMatch.at(1), cleanTitle: clean };
+            var num = numMatch[1];
+            return {
+                num: num,
+                code: 'E' + num,
+                seriesLabel: num + ' серия',
+                rawLabel: clean
+            };
         }
-        return { code: null, cleanTitle: clean };
+        return null;
     }
-
-    function runThumbQueue(tasks, concurrency) {
-        var idx = 0;
-        function worker() {
-            if (idx >= tasks.length) return;
-            var task = tasks.at(idx++);
-            task().then(worker, worker);
-        }
-        for (var i = 0; i < Math.min(concurrency, tasks.length); i++) {
-            worker();
-        }
-    }
-
-    function createThumbLoaderTask(animeId, imgEl, cardEl, folderPath, fileCode) {
-        return function() {
-            var cacheKey = 'https://cr-ep-thumb.local' + animeId + '/' + fileCode;
-            return readThumbCache(cacheKey).then(function(cachedUrl) {
-                if (cachedUrl) {
-                    imgEl.src = cachedUrl;
-                    imgEl.classList.add('is-ready');
-                    return;
-                }
-
-                var encodedBase = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes/' + encodeURIComponent(fileCode);
-                var prefExt = getPreferredExt(animeId);
-                var exts = ['.png', '.jpg', '.webp'];
-                if (prefExt && exts.indexOf(prefExt) !== -1) {
-                    exts = [prefExt].concat(exts.filter(function(x) { return x !== prefExt; }));
-                }
-
-                var candidates = [];
-                exts.forEach(function(ext) {
-                    candidates.push({ url: BASE_STATICALLY + encodedBase + ext, ext: ext });
-                });
-                exts.forEach(function(ext) {
-                    candidates.push({ url: BASE_RAWGH + encodedBase + ext, ext: ext });
-                });
-
-                return new Promise(function(resolve) {
-                    function tryNext(i) {
-                        if (i >= candidates.length) {
-                            cardEl.style.display = 'none';
-                            resolve();
-                            return;
-                        }
-                        var item = candidates.at(i);
-                        GM_xmlhttpRequest({
-                            method: 'GET',
-                            url: item.url,
-                            responseType: 'blob',
-                            timeout: 15000,
-                            onload: function(res) {
-                                if (res.status === 200 && res.response && res.response.size > 100) {
-                                    savePreferredExt(animeId, item.ext);
-                                    imgEl.src = writeThumbCache(cacheKey, res.response);
-                                    imgEl.classList.add('is-ready');
-                                    resolve();
-                                } else {
-                                    tryNext(i + 1);
-                                }
-                            },
-                            onerror: function() { tryNext(i + 1); },
-                            ontimeout: function() { tryNext(i + 1); }
-                        });
-                    }
-                    tryNext(0);
-                });
-            });
-        };
-    }
-
-    function insertSectionBelowBanner(sectionEl) {
-        var bannerHost = document.getElementById('cr-poster-host');
-        if (bannerHost) {
-            bannerHost.insertAdjacentElement('afterend', sectionEl);
-            return;
-        }
-        var nav = document.querySelector('body > nav') || document.querySelector('nav');
-        if (nav) {
-            nav.insertAdjacentElement('afterend', sectionEl);
-        } else {
-            document.body.prepend(sectionEl);
-        }
-    }
-
-    function renderFranchiseEpisodes(animeId, folderPath, epMeta) {
-        var origEpCard = document.querySelector('.card-content.m-episode-list');
-        if (!origEpCard) return;
-
-        var links = Array.from(origEpCard.querySelectorAll('a.m-episode-item'));
-        if (!links.length) return;
-
-        ensureFranchiseStyles();
-
-        var existingSection = document.getElementById('cr-franchise-episodes-section');
-        if (existingSection) existingSection.remove();
-
-        var section = document.createElement('div');
-        section.id = 'cr-franchise-episodes-section';
-        section.setAttribute('data-anime-id', animeId);
-
-        var header = document.createElement('div');
-        header.className = 'cr-ep-section-header';
-        header.textContent = 'Серии';
-        section.appendChild(header);
-
-        var grid = document.createElement('div');
-        grid.className = 'cr-ep-grid';
-
-        var tasks = [];
-
-        links.forEach(function(a) {
-            var href = a.getAttribute('href') || '#';
-            var parsed = detectEpisodeCode(a.textContent, href);
-if (!parsed.code) return;
-var info = (epMeta && epMeta[parsed.code]) || {};
-var displayTitle = info.title ? (parsed.cleanTitle + ' — ' + info.title) : parsed.cleanTitle;
-var card = document.createElement('a');
-card.className = 'cr-ep-card';
-card.href = href;
+    function loadAndCacheThumb(imgEl, cardEl, animeId, folderPath, fileCode) {
+var cacheKey = 'cr-ep-thumb.local' + animeId + '/' + fileCode;
+getCachedThumbUrl(cacheKey).then(function(cachedUrl) {
+if (cachedUrl) {
+imgEl.src = cachedUrl;
+return;
+}
+var encodedBase = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes/' + encodeURIComponent(fileCode);
+var prefExt = getPreferredExt(animeId);
+var exts = ['.png', '.jpg', '.webp'];
+if (prefExt && exts.indexOf(prefExt) !== -1) {
+exts = [prefExt].concat(exts.filter(function(x) { return x !== prefExt; }));
+}
+var candidates = [];
+exts.forEach(function(ext) { candidates.push({ url: BASE_STATICALLY + encodedBase + ext, ext: ext }); });
+exts.forEach(function(ext) { candidates.push({ url: BASE_RAWGH + encodedBase + ext, ext: ext }); });
+var idx = 0;
+function tryNext() {
+if (idx >= candidates.length) {
+cardEl.style.display = 'none';
+return;
+}
+var item = candidates[idx++];
+try {
+GM_xmlhttpRequest({
+method: 'GET',
+url: item.url,
+responseType: 'blob',
+timeout: 15000,
+onload: function(res) {
+if (res.status === 200 && res.response && res.response.size > 100) {
+savePreferredExt(animeId, item.ext);
+imgEl.src = saveThumbToCache(cacheKey, res.response);
+} else {
+tryNext();
+}
+},
+onerror: tryNext,
+ontimeout: tryNext
+});
+} catch (e) {
+tryNext();
+}
+}
+tryNext();
+});
+}
+function getMetaForEpisode(epMeta, parsed) {
+if (!epMeta) return {};
+return epMeta[parsed.code] ||
+epMeta[parsed.num] ||
+epMeta['e' + parsed.num] ||
+epMeta[parsed.seriesLabel] ||
+{};
+}
+function insertSectionBelowBanner(sectionEl) {
+var bannerHost = document.getElementById('cr-poster-host');
+if (bannerHost) {
+bannerHost.insertAdjacentElement('afterend', sectionEl);
+return;
+}
+var nav = document.querySelector('body > nav') || document.querySelector('nav');
+if (nav) nav.insertAdjacentElement('afterend', sectionEl);
+else document.body.prepend(sectionEl);
+}
+function showNeighborInfo(grid, sourceCard, data) {
+hideAllNeighborPanels(grid);
+var visibleCards = Array.from(grid.querySelectorAll('.cr-ep-card')).filter(function(c) {
+return c.style.display !== 'none';
+});
+var pos = visibleCards.indexOf(sourceCard);
+if (pos === -1 || visibleCards.length < 2) return;
+var targetCard = visibleCards[pos + 1];
+if (!targetCard || targetCard.offsetTop !== sourceCard.offsetTop) {
+targetCard = visibleCards[pos - 1];
+}
+if (!targetCard) return;
+var panel = targetCard.querySelector('.cr-ep-neighbor-panel');
+if (!panel) return;
+panel.innerHTML = '';
+var pNum = document.createElement('div');
+pNum.className = 'cr-ep-np-num';
+pNum.textContent = data.seriesLabel;
+panel.appendChild(pNum);
+var pTitle = document.createElement('div');
+pTitle.className = 'cr-ep-np-title';
+pTitle.textContent = data.title;
+panel.appendChild(pTitle);
+if (data.date) {
+var pDateRow = document.createElement('div');
+pDateRow.className = 'cr-ep-np-date-row';
+pDateRow.innerHTML =
+'' +
+'' + data.date + '';
+panel.appendChild(pDateRow);
+}
+if (data.desc) {
+var pDesc = document.createElement('div');
+pDesc.className = 'cr-ep-np-desc';
+pDesc.textContent = data.desc;
+panel.appendChild(pDesc);
+}
+panel.classList.add('is-visible');
+}
+function hideAllNeighborPanels(grid) {
+if (!grid) return;
+grid.querySelectorAll('.cr-ep-neighbor-panel.is-visible').forEach(function(p) {
+p.classList.remove('is-visible');
+});
+}
+function renderFranchiseEpisodes(animeId, folderPath) {
+var origEpCard = document.querySelector('.card-content.m-episode-list');
+if (!origEpCard) return;
+var links = Array.from(origEpCard.querySelectorAll('a.m-episode-item')).filter(function(a) {
+var h = a.getAttribute('href') || '';
+return h.indexOf('-' + animeId + '/') !== -1 || h.indexOf('/' + animeId + '/') !== -1;
+});
+if (!links.length) return;
+ensureFranchiseStyles();
+var existingSection = document.getElementById('cr-franchise-episodes-section');
+if (existingSection) existingSection.remove();
+var section = document.createElement('div');
+section.id = 'cr-franchise-episodes-section';
+section.setAttribute('data-anime-id', animeId);
+var header = document.createElement('div');
+header.className = 'cr-ep-section-header';
+header.textContent = 'Серии';
+section.appendChild(header);
+var grid = document.createElement('div');
+grid.className = 'cr-ep-grid';
+var cardRecords = [];
+links.forEach(function(a) {
+var href = a.getAttribute('href') || '#';
+var parsed = detectEpisodeInfo(a.textContent, href);
+if (!parsed) return;
+var cardData = {
+seriesLabel: parsed.seriesLabel,
+title: parsed.rawLabel,
+duration: '',
+date: '',
+desc: ''
+};
+var card = document.createElement('div');
+card.className = 'cr-ep-card' + (isEpisodeWatched(animeId, parsed.code) ? ' is-watched' : '');
+var mainLink = document.createElement('a');
+mainLink.className = 'cr-ep-main-link';
+mainLink.href = href;
 var thumbWrap = document.createElement('div');
 thumbWrap.className = 'cr-ep-thumb-wrap';
 var img = document.createElement('img');
 img.className = 'cr-ep-thumb';
-img.alt = displayTitle;
+img.alt = cardData.title;
 thumbWrap.appendChild(img);
-if (info.duration) {
-var dur = document.createElement('div');
-dur.className = 'cr-ep-duration';
-dur.textContent = info.duration;
-thumbWrap.appendChild(dur);
-}
+var watchedBadge = document.createElement('div');
+watchedBadge.className = 'cr-ep-watched-badge';
+watchedBadge.textContent = 'Просмотрено';
+thumbWrap.appendChild(watchedBadge);
+var durEl = document.createElement('div');
+durEl.className = 'cr-ep-duration';
+durEl.style.display = 'none';
+thumbWrap.appendChild(durEl);
 var playBadge = document.createElement('div');
 playBadge.className = 'cr-ep-play-badge';
-playBadge.innerHTML = '▶';
+playBadge.innerHTML = '';
 thumbWrap.appendChild(playBadge);
-var meta = document.createElement('div');
-meta.className = 'cr-ep-meta';
-var codeEl = document.createElement('div');
-codeEl.className = 'cr-ep-code';
-codeEl.textContent = parsed.code;
-meta.appendChild(codeEl);
+var bottomBar = document.createElement('div');
+bottomBar.className = 'cr-ep-bottom-bar';
+var baseMeta = document.createElement('div');
+baseMeta.className = 'cr-ep-base-meta';
+var numEl = document.createElement('div');
+numEl.className = 'cr-ep-num';
+numEl.textContent = cardData.seriesLabel;
 var titleEl = document.createElement('div');
-titleEl.className = 'cr-ep-title';
-titleEl.textContent = displayTitle;
-meta.appendChild(titleEl);
-if (info.desc) {
-var descEl = document.createElement('div');
-descEl.className = 'cr-ep-desc';
-descEl.textContent = info.desc;
-meta.appendChild(descEl);
+titleEl.className = 'cr-ep-base-title';
+titleEl.textContent = cardData.title;
+baseMeta.appendChild(numEl);
+baseMeta.appendChild(titleEl);
+var menuAnchor = document.createElement('div');
+menuAnchor.className = 'cr-ep-menu-anchor';
+var dotsBtn = document.createElement('button');
+dotsBtn.type = 'button';
+dotsBtn.className = 'cr-ep-dots-btn';
+dotsBtn.innerHTML = '⋮';
+var popupMenu = document.createElement('div');
+popupMenu.className = 'cr-ep-popup-menu';
+var watchToggleItem = document.createElement('button');
+watchToggleItem.type = 'button';
+watchToggleItem.className = 'cr-ep-popup-item';
+watchToggleItem.textContent = isEpisodeWatched(animeId, parsed.code)
+? 'Убрать из просмотренного'
+: 'Добавить в просмотренное';
+var menuHideTimer = null;
+function closeMenu() {
+popupMenu.classList.remove('is-open');
+dotsBtn.classList.remove('is-active');
 }
-card.appendChild(thumbWrap);
-card.appendChild(meta);
-grid.appendChild(card);
-tasks.push(createThumbLoaderTask(animeId, img, card, folderPath, parsed.code));
+function scheduleMenuClose() {
+if (menuHideTimer) clearTimeout(menuHideTimer);
+menuHideTimer = setTimeout(closeMenu, 260);
+}
+function cancelMenuClose() {
+if (menuHideTimer) clearTimeout(menuHideTimer);
+}
+dotsBtn.addEventListener('click', function(e) {
+e.preventDefault();
+e.stopPropagation();
+cancelMenuClose();
+var willOpen = !popupMenu.classList.contains('is-open');
+document.querySelectorAll('.cr-ep-popup-menu.is-open').forEach(function(m) {
+m.classList.remove('is-open');
 });
-if (!tasks.length) return;
+document.querySelectorAll('.cr-ep-dots-btn.is-active').forEach(function(b) {
+b.classList.remove('is-active');
+});
+if (willOpen) {
+popupMenu.classList.add('is-open');
+dotsBtn.classList.add('is-active');
+}
+});
+menuAnchor.addEventListener('mouseenter', cancelMenuClose);
+menuAnchor.addEventListener('mouseleave', scheduleMenuClose);
+popupMenu.addEventListener('mouseenter', cancelMenuClose);
+popupMenu.addEventListener('mouseleave', scheduleMenuClose);
+card.addEventListener('mouseleave', scheduleMenuClose);
+watchToggleItem.addEventListener('click', function(e) {
+e.preventDefault();
+e.stopPropagation();
+var nowWatched = toggleEpisodeWatched(animeId, parsed.code);
+card.classList.toggle('is-watched', nowWatched);
+watchToggleItem.textContent = nowWatched
+? 'Убрать из просмотренного'
+: 'Добавить в просмотренное';
+closeMenu();
+});
+popupMenu.appendChild(watchToggleItem);
+menuAnchor.appendChild(dotsBtn);
+menuAnchor.appendChild(popupMenu);
+mainLink.appendChild(thumbWrap);
+bottomBar.appendChild(baseMeta);
+bottomBar.appendChild(menuAnchor);
+var neighborPanel = document.createElement('div');
+neighborPanel.className = 'cr-ep-neighbor-panel';
+card.appendChild(mainLink);
+card.appendChild(bottomBar);
+card.appendChild(neighborPanel);
+var hoverTimer = null;
+card.addEventListener('mouseenter', function() {
+if (hoverTimer) clearTimeout(hoverTimer);
+hoverTimer = setTimeout(function() {
+showNeighborInfo(grid, card, cardData);
+}, 350);
+});
+card.addEventListener('mouseleave', function() {
+if (hoverTimer) clearTimeout(hoverTimer);
+hideAllNeighborPanels(grid);
+});
+grid.appendChild(card);
+loadAndCacheThumb(img, card, animeId, folderPath, parsed.code);
+cardRecords.push({
+parsed: parsed,
+cardData: cardData,
+titleEl: titleEl,
+durEl: durEl,
+imgEl: img
+});
+});
+if (!cardRecords.length) return;
 section.appendChild(grid);
 insertSectionBelowBanner(section);
 var parentCard = origEpCard.closest('.card');
 if (parentCard) parentCard.style.display = 'none';
 else origEpCard.style.display = 'none';
-runThumbQueue(tasks, 4);
+loadEpisodesMetadata(animeId, folderPath).then(function(epMeta) {
+if (getAnimeId() !== animeId || !epMeta) return;
+cardRecords.forEach(function(rec) {
+var info = getMetaForEpisode(epMeta, rec.parsed);
+if (!info) return;
+if (info.title || info.name) {
+rec.cardData.title = info.title || info.name;
+rec.titleEl.textContent = rec.cardData.title;
+rec.imgEl.alt = rec.cardData.title;
+}
+if (info.duration || info.time) {
+rec.cardData.duration = formatDurationUpper(info.duration || info.time);
+rec.durEl.textContent = rec.cardData.duration;
+rec.durEl.style.display = 'block';
+}
+if (info.date || info.releaseDate || info.aired) {
+rec.cardData.date = info.date || info.releaseDate || info.aired;
+}
+if (info.desc || info.description) {
+rec.cardData.desc = info.desc || info.description;
+}
+});
+});
 }
 function syncFranchise() {
 var animeId = getAnimeId();
@@ -1972,6 +2128,10 @@ var existingSection = document.getElementById('cr-franchise-episodes-section');
 if (!animeId) {
 if (existingSection) existingSection.remove();
 return;
+}
+if (existingSection && existingSection.getAttribute('data-anime-id') !== animeId) {
+existingSection.remove();
+existingSection = null;
 }
 if (existingSection && existingSection.getAttribute('data-anime-id') === animeId) {
 var bannerHost = document.getElementById('cr-poster-host');
@@ -1982,12 +2142,16 @@ return;
 }
 var origEpCard = document.querySelector('.card-content.m-episode-list');
 if (!origEpCard) return;
-findTitleFolderInGitHub(animeId).then(function(folderPath) {
-if (!folderPath || getAnimeId() !== animeId) return;
-loadEpisodesMetadata(animeId, folderPath).then(function(epMeta) {
-if (getAnimeId() !== animeId) return;
-renderFranchiseEpisodes(animeId, folderPath, epMeta);
+var hasMatchingLinks = Array.from(origEpCard.querySelectorAll('a.m-episode-item')).some(function(a) {
+var h = a.getAttribute('href') || '';
+return h.indexOf('-' + animeId + '/') !== -1 || h.indexOf('/' + animeId + '/') !== -1;
 });
+if (!hasMatchingLinks) return;
+var myGen = ++renderGen;
+findTitleFolder(animeId).then(function(folderPath) {
+if (myGen !== renderGen || getAnimeId() !== animeId) return;
+if (!folderPath) return;
+renderFranchiseEpisodes(animeId, folderPath);
 });
 }
 window.addEventListener('popstate', syncFranchise);
