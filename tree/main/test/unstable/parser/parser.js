@@ -28,9 +28,9 @@
         };
 
         const textBtn = document.createElement('button');
-        textBtn.innerText = '📄 Текст';
+        textBtn.innerText = '📄 Скачать JS-данные';
         Object.assign(textBtn.style, btnStyle, { backgroundColor: '#2abdbb' });
-        textBtn.addEventListener('click', downloadTextOnly);
+        textBtn.addEventListener('click', downloadJsData);
 
         const hdBtn = document.createElement('button');
         hdBtn.innerText = '🖼️ Подготовить HD + .bat';
@@ -62,12 +62,27 @@
 
         const items = cards.map((card, index) => {
             const epCode = 'E' + (index + 1);
-            const titleEl = card.querySelector('a[class*="title-link"]') || card.querySelector('h4 a, h3 a');
+
+            // Ищем точный заголовок серии из h3[data-t="episode-title"]
+            const titleEl =
+                card.querySelector('[data-t="episode-title"]') ||
+                card.querySelector('a[class*="title-link"]') ||
+                card.querySelector('h4 a, h3 a');
+
             const rawTitle = titleEl ? titleEl.innerText.trim() : epCode;
+            // Убираем "E1 - " в начале, чтобы оставить чистое название серии
+            const cleanTitle = rawTitle.replace(/^E\d+\s*[-–—:]\s*/i, '').trim() || rawTitle;
 
-            const duration = card.querySelector('[data-t="duration-info"]')?.innerText.trim() || 'Не указано';
-            const description = card.querySelector('[data-t="description"]')?.innerText.trim() || 'Нет описания';
+            // Продолжительность
+            const duration = card.querySelector('[data-t="duration-info"]')?.innerText.trim() || '';
 
+            // Дата выхода из span[data-t="meta-info"]
+            const date = card.querySelector('[data-t="meta-info"]')?.innerText.trim() || '';
+
+            // Описание
+            const description = card.querySelector('[data-t="description"]')?.innerText.trim() || '';
+
+            // Чёткая картинка
             const clearImgEl =
                 card.querySelector('picture:nth-child(2) img') ||
                 card.querySelector('img[class*="original"]') ||
@@ -81,6 +96,7 @@
                 .replace('width=320', 'width=1280')
                 .replace('height=180', 'height=720');
 
+            // Размытая картинка
             const blurImgEl =
                 card.querySelector('picture:nth-child(1) img') ||
                 card.querySelector('img[class*="preview"]') ||
@@ -93,14 +109,13 @@
                     : rawClearUrl;
             }
 
-            // Хэш файла на сервере без расширения
             const urlForHash = hdUrl || blurUrl;
             const fileWithExt = urlForHash.split('/').pop().split('?').at(0);
             const serverHash = fileWithExt.includes('.')
                 ? fileWithExt.slice(0, fileWithExt.lastIndexOf('.'))
                 : fileWithExt;
 
-            return { epCode, rawTitle, duration, description, hdUrl, blurUrl, serverHash };
+            return { epCode, rawTitle, cleanTitle, duration, date, description, hdUrl, blurUrl, serverHash };
         });
 
         return { seriesTitle, safeSeriesName, items };
@@ -115,18 +130,29 @@
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
 
-    function downloadTextOnly() {
+    // Сохранение данных в виде готового JS-объекта
+    function downloadJsData() {
         const data = collectEpisodesData();
         if (!data) return;
 
-        let outputText = `СЕРИАЛ: ${data.seriesTitle}\nURL: ${window.location.href}\nВсего серий: ${data.items.length}\n`;
-        outputText += '='.repeat(50) + '\n\n';
+        const episodesObj = {};
 
         data.items.forEach(item => {
-            outputText += `${item.rawTitle}\nДлительность: ${item.duration}\nОписание: ${item.description}\n${'-'.repeat(40)}\n\n`;
+            episodesObj[item.epCode] = {
+                title: item.cleanTitle,
+                desc: item.description,
+                duration: item.duration,
+                date: item.date
+            };
         });
 
-        saveBlob(new Blob([outputText], { type: 'text/plain;charset=utf-8' }), `${data.safeSeriesName}_текст.txt`);
+        // Форматируем в красивый читаемый JS-код с отступами в 2 пробела
+        const jsContent = `const episodesData = ${JSON.stringify(episodesObj, null, 2)};\n`;
+
+        saveBlob(
+            new Blob([jsContent], { type: 'application/javascript;charset=utf-8' }),
+            `${data.safeSeriesName}_episodes.js`
+        );
     }
 
     function preparePageAndBat(isBlur) {
@@ -138,7 +164,6 @@
         const targetSubdir = isBlur ? `${data.safeSeriesName}\\blur` : `${data.safeSeriesName}`;
         const batName = isBlur ? `2_собрать_Blur_${data.safeSeriesName}.bat` : `1_собрать_HD_${data.safeSeriesName}.bat`;
 
-        // 1. Генерируем .bat, который сам найдёт папку *_files от сохранённого HTML и скопирует картинки с именами E1, E2...
         const batLines = [
             '@echo off',
             'chcp 65001 > nul',
@@ -151,7 +176,6 @@
 
         data.items.forEach(item => {
             if (item.serverHash && item.serverHash.length > 5) {
-                // Ищем файл с хэшем (даже если Chrome дописал цифру в скобках при дублях)
                 batLines.push(`    for %%F in ("%%D\\${item.serverHash}*.*") do copy /Y "%%F" "%OUT_DIR%\\${item.epCode}%%~xF" >nul`);
             }
         });
@@ -163,7 +187,6 @@
 
         saveBlob(new Blob([batLines.join('\r\n')], { type: 'text/plain;charset=utf-8' }), batName);
 
-        // 2. Очищаем страницу и выводим только нужные картинки, чтобы при нажатии Ctrl+S Chrome сохранил их все в *_files
         document.body.innerHTML = '';
         document.body.style.backgroundColor = '#141519';
         document.body.style.color = '#fff';
@@ -204,7 +227,7 @@
             img.style.cssText = 'width:100%; height:auto; border-radius:4px; display:block;';
 
             const label = document.createElement('div');
-            label.innerText = `${item.epCode} — ${item.rawTitle}`;
+            label.innerText = `${item.epCode} — ${item.cleanTitle} (${item.date})`;
             label.style.cssText = `margin-top:8px; font-size:13px; color:${accentColor}; font-weight:bold;`;
 
             box.appendChild(img);
@@ -215,4 +238,3 @@
         document.body.appendChild(grid);
     }
 })();
-
