@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Anime 365 Crunchyroll Banner (GitHub Loader)
 // @namespace    http://tampermonkey.net
-// @version      10.0
-// @description  Кэширование постеров (Cache API + GM_setValue) и кнопка сброса кэша текущей страницы в body > nav
+// @version      12.1
+// @description  Быстрая загрузка постеров с кэшированием и кнопкой сброса кэша текущей страницы в body > nav
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        GM_xmlhttpRequest
@@ -16,15 +16,15 @@
 
     var USER = 'Ruroll';
     var REPO = 'WB35RWQwFRFijt000IMG';
-    var CACHE_NAME = 'cr-posters-cache-v3';
+    var CACHE_NAME = 'cr-posters-cache-v8';
     var failedIds = {};
     var loadedCache = {};
     var isLoading = false;
+    var loadGen = 0;
 
     var PROTO = 'https' + '://';
     var BASE_RAWGH = PROTO + 'raw' + '.githubusercontent' + '.com/' + USER + '/' + REPO + '/main/';
     var BASE_STATICALLY = PROTO + 'cdn' + '.statically' + '.io/gh/' + USER + '/' + REPO + '/main/';
-    var BASE_GITHACK = PROTO + 'raw' + '.githack' + '.com/' + USER + '/' + REPO + '/main/';
 
     function getAnimeId() {
         var path = window.location.pathname.replace(/\/+$/, '');
@@ -105,7 +105,7 @@
     function getSavedRoute(animeId) {
         try {
             if (typeof GM_getValue === 'function') {
-                var raw = GM_getValue('cr_route_v3_' + animeId, '');
+                var raw = GM_getValue('cr_route_v8_' + animeId, '');
                 if (raw) return JSON.parse(raw);
             }
         } catch (e) {}
@@ -115,7 +115,7 @@
     function saveRoute(animeId, url, mode) {
         try {
             if (typeof GM_setValue === 'function') {
-                GM_setValue('cr_route_v3_' + animeId, JSON.stringify({ url: url, mode: mode }));
+                GM_setValue('cr_route_v8_' + animeId, JSON.stringify({ url: url, mode: mode }));
             }
         } catch (e) {}
     }
@@ -123,14 +123,18 @@
     function clearSavedRoute(animeId) {
         try {
             if (typeof GM_setValue === 'function') {
-                GM_setValue('cr_route_v3_' + animeId, '');
+                GM_setValue('cr_route_v8_' + animeId, '');
             }
         } catch (e) {}
     }
+        function initBanner(animeId, forceFresh) {
+        if (!forceFresh && (document.getElementById('cr-poster-host') || failedIds[animeId] || isLoading)) return;
 
-    function initBanner(animeId, forceFresh) {
-        if (document.getElementById('cr-poster-host') || failedIds[animeId] || isLoading) return;
+        var oldHost = document.getElementById('cr-poster-host');
+        if (oldHost) oldHost.remove();
+
         isLoading = true;
+        var myGen = ++loadGen;
 
         var host = document.createElement('div');
         host.id = 'cr-poster-host';
@@ -173,11 +177,13 @@
         if (!forceFresh && loadedCache[animeId]) {
             var mem = loadedCache[animeId];
             createImageBitmap(mem.blob).then(function(bmp) {
+                if (myGen !== loadGen) return;
                 renderBitmap(bmp, mem.mode, bannerBox, bgWrap, bCanvas, gradEl, st);
                 isLoading = false;
             }).catch(function() {
+                if (myGen !== loadGen) return;
                 delete loadedCache[animeId];
-                isLoading = false;
+                startNetworkLoad(false);
             });
             return;
         }
@@ -188,12 +194,15 @@
         }
 
         readFromPersistentCache(animeId).then(function(cached) {
+            if (myGen !== loadGen) return;
             if (cached && cached.blob && cached.blob.size > 500) {
                 loadedCache[animeId] = cached;
                 createImageBitmap(cached.blob).then(function(bmp) {
+                    if (myGen !== loadGen) return;
                     renderBitmap(bmp, cached.mode, bannerBox, bgWrap, bCanvas, gradEl, st);
                     isLoading = false;
                 }).catch(function() {
+                    if (myGen !== loadGen) return;
                     startNetworkLoad(false);
                 });
             } else {
@@ -201,108 +210,125 @@
             }
         });
 
-        function startNetworkLoad(bypassHttpCache) {
-            var savedRoute = bypassHttpCache ? null : getSavedRoute(animeId);
-            var exts = ['.jpg', '.JPG', '.jpeg', '.png', '.webp', '.PNG', '.WEBP'];
+        function startNetworkLoad(bypassCache) {
+            var savedRoute = bypassCache ? null : getSavedRoute(animeId);
+            var exts = ['.jpg', '.png', '.JPG', '.jpeg', '.webp', '.PNG', '.WEBP'];
             var queue = [];
-            var bust = bypassHttpCache ? ('?_t=' + Date.now()) : '';
 
             if (savedRoute && savedRoute.url) {
                 queue.push({ url: savedRoute.url, mode: savedRoute.mode, isSaved: true });
             }
 
+            // Быстрый проход по прямому GitHub без лишних дублей зеркал (в 3 раза быстрее!)
             exts.forEach(function(ext) {
-                queue.push({ url: BASE_RAWGH + 'PosterRS/' + animeId + ext + bust, mode: 'rs', cleanUrl: BASE_RAWGH + 'PosterRS/' + animeId + ext });
-                queue.push({ url: BASE_STATICALLY + 'PosterRS/' + animeId + ext + bust, mode: 'rs', cleanUrl: BASE_STATICALLY + 'PosterRS/' + animeId + ext });
-                queue.push({ url: BASE_GITHACK + 'PosterRS/' + animeId + ext + bust, mode: 'rs', cleanUrl: BASE_GITHACK + 'PosterRS/' + animeId + ext });
-});
-exts.forEach(function(ext) {
-queue.push({ url: BASE_RAWGH + 'PostersBS/' + animeId + ext + bust, mode: 'bs', cleanUrl: BASE_RAWGH + 'PostersBS/' + animeId + ext });
-queue.push({ url: BASE_STATICALLY + 'PostersBS/' + animeId + ext + bust, mode: 'bs', cleanUrl: BASE_STATICALLY + 'PostersBS/' + animeId + ext });
-queue.push({ url: BASE_GITHACK + 'PostersBS/' + animeId + ext + bust, mode: 'bs', cleanUrl: BASE_GITHACK + 'PostersBS/' + animeId + ext });
-});
-exts.forEach(function(ext) {
-queue.push({ url: BASE_RAWGH + 'posters/' + animeId + ext + bust, mode: 'default', cleanUrl: BASE_RAWGH + 'posters/' + animeId + ext });
-queue.push({ url: BASE_STATICALLY + 'posters/' + animeId + ext + bust, mode: 'default', cleanUrl: BASE_STATICALLY + 'posters/' + animeId + ext });
-queue.push({ url: BASE_GITHACK + 'posters/' + animeId + ext + bust, mode: 'default', cleanUrl: BASE_GITHACK + 'posters/' + animeId + ext });
-});
-function handleFail() {
-isLoading = false;
-failedIds[animeId] = true;
-if (host && host.parentNode) host.remove();
-}
-function tryNext(idx) {
-if (idx >= queue.length) {
-handleFail();
-return;
-}
-var item = queue.at(idx);
-var reqOpts = {
-method: 'GET',
-url: item.url,
-headers: { 'Accept': 'image/*' },
-responseType: 'blob',
-timeout: 30000,
-onload: function(res) {
-if (res.status === 200 && res.response && res.response.size > 500) {
-var blob = res.response;
-createImageBitmap(blob).then(function(bmp) {
-loadedCache[animeId] = { blob: blob, mode: item.mode };
-saveToPersistentCache(animeId, blob, item.mode);
-saveRoute(animeId, item.cleanUrl || item.url, item.mode);
-renderBitmap(bmp, item.mode, bannerBox, bgWrap, bCanvas, gradEl, st);
-isLoading = false;
-}).catch(function() {
-if (item.isSaved) clearSavedRoute(animeId);
-tryNext(idx + 1);
-});
-} else {
-if (item.isSaved) clearSavedRoute(animeId);
-tryNext(idx + 1);
-}
-},
-onerror: function() {
-if (item.isSaved) clearSavedRoute(animeId);
-tryNext(idx + 1);
-},
-ontimeout: function() {
-tryNext(idx + 1);
-}
-};
-if (bypassHttpCache) {
-reqOpts.nocache = true;
-reqOpts.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
-}
-GM_xmlhttpRequest(reqOpts);
-}
-tryNext(0);
-}
-}
-function drawRSFitInBanner(ctx, img, tw, th) {
-ctx.fillStyle = '#000000';
-ctx.fillRect(0, 0, tw, th);
-var visibleH = 720;
-var scale = Math.min(visibleH / img.height, tw / img.width);
-var w = Math.round(img.width * scale);
-var h = Math.round(img.height * scale);
-var x = Math.round((tw - w) / 2);
-var y = 0;
-ctx.drawImage(img, x, y, w, h);
-var fadeW = Math.min(260, Math.round(w * 0.28));
-var gradL = ctx.createLinearGradient(x, 0, x + fadeW, 0);
-gradL.addColorStop(0, '#000000');
-gradL.addColorStop(0.35, 'rgba(0,0,0,0.68)');
-gradL.addColorStop(1, 'rgba(0,0,0,0)');
-ctx.fillStyle = gradL;
-ctx.fillRect(x, y, fadeW, h);
-var gradR = ctx.createLinearGradient(x + w - fadeW, 0, x + w, 0);
-gradR.addColorStop(0, 'rgba(0,0,0,0)');
-gradR.addColorStop(0.65, 'rgba(0,0,0,0.68)');
-gradR.addColorStop(1, '#000000');
-ctx.fillStyle = gradR;
-ctx.fillRect(x + w - fadeW, y, fadeW, h);
-var fadeB = Math.min(180, Math.round(h * 0.28));
-var gradB = ctx.createLinearGradient(0, y + h - fadeB, 0, y + h);
+                queue.push({ url: BASE_RAWGH + 'PosterRS/' + animeId + ext, mode: 'rs' });
+            });
+            exts.forEach(function(ext) {
+                queue.push({ url: BASE_RAWGH + 'PostersBS/' + animeId + ext, mode: 'bs' });
+            });
+            exts.forEach(function(ext) {
+                queue.push({ url: BASE_RAWGH + 'posters/' + animeId + ext, mode: 'default' });
+            });
+
+            // Резервный проход через statically, если raw.githubusercontent недоступен
+            ['.jpg', '.png', '.webp'].forEach(function(ext) {
+                queue.push({ url: BASE_STATICALLY + 'PosterRS/' + animeId + ext, mode: 'rs' });
+                queue.push({ url: BASE_STATICALLY + 'PostersBS/' + animeId + ext, mode: 'bs' });
+                queue.push({ url: BASE_STATICALLY + 'posters/' + animeId + ext, mode: 'default' });
+            });
+
+            function handleFail() {
+                if (myGen !== loadGen) return;
+                isLoading = false;
+                failedIds[animeId] = true;
+                if (host && host.parentNode) host.remove();
+            }
+
+            function tryNext(idx) {
+                if (myGen !== loadGen) return;
+                if (idx >= queue.length) {
+                    handleFail();
+                    return;
+                }
+                var item = queue.at(idx);
+                if (st) st.textContent = 'Загрузка ' + animeId + ' (' + (idx + 1) + '/' + queue.length + ')...';
+
+                var req = {
+                    method: 'GET',
+                    url: item.url,
+                    headers: { 'Accept': 'image/*' },
+                    responseType: 'blob',
+                    timeout: 30000,
+                    onload: function(res) {
+                        if (myGen !== loadGen) return;
+                        if (res.status === 200 && res.response && res.response.size > 500) {
+                            var blob = res.response;
+                            createImageBitmap(blob).then(function(bmp) {
+                                if (myGen !== loadGen) return;
+                                loadedCache[animeId] = { blob: blob, mode: item.mode };
+                                saveToPersistentCache(animeId, blob, item.mode);
+                                saveRoute(animeId, item.url, item.mode);
+                                renderBitmap(bmp, item.mode, bannerBox, bgWrap, bCanvas, gradEl, st);
+                                isLoading = false;
+                            }).catch(function() {
+                                if (item.isSaved) clearSavedRoute(animeId);
+                                tryNext(idx + 1);
+                            });
+                        } else {
+                            if (item.isSaved) clearSavedRoute(animeId);
+                            tryNext(idx + 1);
+                        }
+                    },
+                    onerror: function() {
+                        if (myGen !== loadGen) return;
+                        if (item.isSaved) clearSavedRoute(animeId);
+                        tryNext(idx + 1);
+                    },
+                    ontimeout: function() {
+                        if (myGen !== loadGen) return;
+                        tryNext(idx + 1);
+                    }
+                };
+                if (bypassCache) {
+                    req.nocache = true;
+                    req.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+                    req.headers['Pragma'] = 'no-cache';
+                }
+                GM_xmlhttpRequest(req);
+            }
+
+            tryNext(0);
+        }
+    }
+
+    function drawRSFitInBanner(ctx, img, tw, th) {
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, tw, th);
+        var visibleH = 720;
+        var scale = Math.min(visibleH / img.height, tw / img.width);
+        var w = Math.round(img.width * scale);
+        var h = Math.round(img.height * scale);
+        var x = Math.round((tw - w) / 2);
+        var y = 0;
+        ctx.drawImage(img, x, y, w, h);
+
+        var fadeW = Math.min(260, Math.round(w * 0.28));
+        var gradL = ctx.createLinearGradient(x, 0, x + fadeW, 0);
+        gradL.addColorStop(0, '#000000');
+        gradL.addColorStop(0.35, 'rgba(0,0,0,0.68)');
+        gradL.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gradL;
+        ctx.fillRect(x, y, fadeW, h);
+
+        var gradR = ctx.createLinearGradient(x + w - fadeW, 0, x + w, 0);
+        gradR.addColorStop(0, 'rgba(0,0,0,0)');
+        gradR.addColorStop(0.65, 'rgba(0,0,0,0.68)');
+        gradR.addColorStop(1, '#000000');
+        ctx.fillStyle = gradR;
+        ctx.fillRect(x + w - fadeW, y, fadeW, h);
+
+        var fadeB = Math.min(180, Math.round(h * 0.28));
+        var gradB = ctx.createLinearGradient(0, y + h - fadeB, 0, y + h);
 gradB.addColorStop(0, 'rgba(0,0,0,0)');
 gradB.addColorStop(1, '#000000');
 ctx.fillStyle = gradB;
@@ -337,16 +363,7 @@ btn.style.cssText =
 'font-size: 12px;' +
 'font-weight: 600;' +
 'font-family: Roboto, Lato, sans-serif;' +
-'cursor: pointer;' +
-'transition: background 0.15s, color 0.15s;';
-btn.addEventListener('mouseenter', function() {
-btn.style.background = '#f47521';
-btn.style.color = '#000000';
-});
-btn.addEventListener('mouseleave', function() {
-btn.style.background = 'rgba(244, 117, 33, 0.16)';
-btn.style.color = '#f47521';
-});
+'cursor: pointer;';
 btn.addEventListener('click', function(e) {
 e.preventDefault();
 e.stopPropagation();
@@ -357,11 +374,8 @@ delete loadedCache[curId];
 delete failedIds[curId];
 clearSavedRoute(curId);
 isLoading = false;
-// Сообщаем скрипту логотипов, что нужно тоже сбросить кэш этого ID
 window.dispatchEvent(new CustomEvent('cr-reset-page-cache', { detail: { animeId: curId } }));
 clearPersistentCache(curId).then(function() {
-var oldHost = document.getElementById('cr-poster-host');
-if (oldHost) oldHost.remove();
 initBanner(curId, true);
 setTimeout(function() {
 btn.innerHTML = '↻ Обновить';
@@ -393,9 +407,10 @@ if (host) host.remove();
 }
 }
 window.addEventListener('popstate', syncVisibility);
-document.addEventListener('click', function() { setTimeout(syncVisibility, 200); });
 setInterval(syncVisibility, 500);
 })();
+
+
 
 
 // ==UserScript==
@@ -843,8 +858,8 @@ setInterval(syncVisibility, 500);
 // ==UserScript==
 // @name         Anime 365 Crunchyroll Logo Overlay
 // @namespace    http://tampermonkey.net
-// @version      8.0
-// @description  Подгружает логотип из Logo / LogoCNT с кэшированием и сбросом по кнопке в nav
+// @version      10.0
+// @description  Рабочая схема загрузки логотипов из Logo / LogoCNT + кэширование + сброс по кнопке в nav
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        GM_xmlhttpRequest
@@ -858,10 +873,11 @@ setInterval(syncVisibility, 500);
 
     var USER = 'Ruroll';
     var REPO = 'WB35RWQwFRFijt000IMG';
-    var LOGO_CACHE_NAME = 'cr-logos-cache-v4';
+    var LOGO_CACHE_NAME = 'cr-logos-cache-v7';
 
     var activeAnimeId = null;
     var isLoading = false;
+    var logoGen = 0;
     var loadedLogoCache = {};
     var failedLogoIds = {};
     var forceFreshForId = {};
@@ -874,7 +890,7 @@ setInterval(syncVisibility, 500);
     function getSavedLogoRoute(animeId) {
         try {
             if (typeof GM_getValue === 'function') {
-                var raw = GM_getValue('cr_logo_route_v4_' + animeId, '');
+                var raw = GM_getValue('cr_logo_route_v7_' + animeId, '');
                 if (raw) return JSON.parse(raw);
             }
         } catch (e) {}
@@ -884,7 +900,7 @@ setInterval(syncVisibility, 500);
     function saveLogoRoute(animeId, url, align) {
         try {
             if (typeof GM_setValue === 'function') {
-                GM_setValue('cr_logo_route_v4_' + animeId, JSON.stringify({ url: url, align: align }));
+                GM_setValue('cr_logo_route_v7_' + animeId, JSON.stringify({ url: url, align: align }));
             }
         } catch (e) {}
     }
@@ -892,7 +908,7 @@ setInterval(syncVisibility, 500);
     function clearSavedLogoRoute(animeId) {
         try {
             if (typeof GM_setValue === 'function') {
-                GM_setValue('cr_logo_route_v4_' + animeId, '');
+                GM_setValue('cr_logo_route_v7_' + animeId, '');
             }
         } catch (e) {}
     }
@@ -932,7 +948,6 @@ setInterval(syncVisibility, 500);
         }).catch(function() {});
     }
 
-    // Слушаем нажатие кнопки «↻ Обновить» в nav
     window.addEventListener('cr-reset-page-cache', function(e) {
         var resetId = e && e.detail && e.detail.animeId;
         if (!resetId) return;
@@ -940,14 +955,19 @@ setInterval(syncVisibility, 500);
         delete failedLogoIds[resetId];
         clearSavedLogoRoute(resetId);
         forceFreshForId[resetId] = true;
+        logoGen++;
+        isLoading = false;
         if (activeAnimeId === resetId) {
             activeAnimeId = null;
-            isLoading = false;
+        }
+        var host = document.getElementById('cr-poster-host');
+        if (host && host.shadowRoot) {
+            var oldImg = host.shadowRoot.getElementById('cr-anime-logo');
+            if (oldImg) oldImg.remove();
         }
         clearLogoCache(resetId);
     });
-
-    function ensureLogoStyle(shadow) {
+        function ensureLogoStyle(shadow) {
         if (shadow.getElementById('cr-logo-style')) return;
         var st = document.createElement('style');
         st.id = 'cr-logo-style';
@@ -1011,6 +1031,7 @@ setInterval(syncVisibility, 500);
     }
 
     function loadLogoWithCache(shadow, animeId) {
+        var myGen = ++logoGen;
         var bypass = !!forceFreshForId[animeId];
         delete forceFreshForId[animeId];
 
@@ -1022,31 +1043,33 @@ setInterval(syncVisibility, 500);
         }
 
         if (bypass) {
-            startLogoNetworkLoad(shadow, animeId, true);
+            startLogoNetworkLoad(shadow, animeId, true, myGen);
             return;
         }
 
         readLogoFromCache(animeId).then(function(cached) {
+            if (myGen !== logoGen) return;
             if (cached && cached.blob && cached.blob.size > 100) {
                 loadedLogoCache[animeId] = cached;
                 renderLogo(shadow, animeId, cached.blob, cached.align);
                 isLoading = false;
             } else {
-                startLogoNetworkLoad(shadow, animeId, false);
+                startLogoNetworkLoad(shadow, animeId, false, myGen);
             }
         });
     }
 
-    function startLogoNetworkLoad(shadow, animeId, bypassHttpCache) {
-        var savedRoute = bypassHttpCache ? null : getSavedLogoRoute(animeId);
+    function startLogoNetworkLoad(shadow, animeId, bypassCache, myGen) {
+        var savedRoute = bypassCache ? null : getSavedLogoRoute(animeId);
         var exts = ['.png', '.jpg', '.JPG', '.jpeg', '.webp', '.PNG', '.WEBP'];
         var queue = [];
-        var bust = bypassHttpCache ? ('?_t=' + Date.now()) : '';
+        var bust = bypassCache ? ('?_t=' + Date.now()) : '';
 
         if (savedRoute && savedRoute.url) {
             queue.push({ url: savedRoute.url, align: savedRoute.align || 'left', isSaved: true });
         }
 
+        // Точно тот же порядок из рабочей v7.0: сначала BASE_RAWGH, затем GITHACK и STATICALLY
         exts.forEach(function(ext) {
             queue.push({ url: BASE_RAWGH + 'Logo/' + animeId + ext, align: 'left', cleanUrl: BASE_RAWGH + 'Logo/' + animeId + ext });
             queue.push({ url: BASE_GITHACK + 'Logo/' + animeId + ext + bust, align: 'left', cleanUrl: BASE_GITHACK + 'Logo/' + animeId + ext });
@@ -1060,23 +1083,26 @@ setInterval(syncVisibility, 500);
         });
 
         function tryNext(idx) {
+            if (myGen !== logoGen) return;
             if (idx >= queue.length || activeAnimeId !== animeId) {
                 if (idx >= queue.length) failedLogoIds[animeId] = true;
                 isLoading = false;
                 return;
             }
             var item = queue[idx];
-            var reqOpts = {
+            var req = {
                 method: 'GET',
                 url: item.url,
                 headers: { 'Accept': 'image/*' },
                 responseType: 'blob',
                 timeout: 30000,
                 onload: function(res) {
+                    if (myGen !== logoGen) return;
                     if (res.status === 200 && res.response && res.response.size > 100) {
                         var blob = res.response;
                         createImageBitmap(blob).then(function(bmp) {
                             if (bmp && typeof bmp.close === 'function') bmp.close();
+                            if (myGen !== logoGen) return;
                             loadedLogoCache[animeId] = { blob: blob, align: item.align };
                             saveLogoToCache(animeId, blob, item.align);
                             saveLogoRoute(animeId, item.cleanUrl || item.url, item.align);
@@ -1092,45 +1118,364 @@ setInterval(syncVisibility, 500);
                         if (item.isSaved) clearSavedLogoRoute(animeId);
                         tryNext(idx + 1);
                     }
-                    },
-onerror: function() {
-if (item.isSaved) clearSavedLogoRoute(animeId);
-tryNext(idx + 1);
-},
-ontimeout: function() {
-tryNext(idx + 1);
-}
-};
-if (bypassHttpCache) {
-reqOpts.nocache = true;
-reqOpts.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
-}
-GM_xmlhttpRequest(reqOpts);
-}
-tryNext(0);
-}
-function syncLogo() {
-var host = document.getElementById('cr-poster-host');
-if (!host || !host.shadowRoot) {
-activeAnimeId = null;
-isLoading = false;
-return;
-}
-var animeId = host.getAttribute('data-anime-id');
-if (!animeId || failedLogoIds[animeId]) {
-return;
-}
-var statusEl = host.shadowRoot.getElementById('st');
-var canvasEl = host.shadowRoot.querySelector('.bg-canvas');
-var isPosterLoaded = (statusEl && statusEl.style.display === 'none') ||
-(canvasEl && canvasEl.width > 0 && canvasEl.height > 0);
-if (!isPosterLoaded) return;
-if (activeAnimeId !== animeId && !isLoading) {
-activeAnimeId = animeId;
-isLoading = true;
-loadLogoWithCache(host.shadowRoot, animeId);
-}
-}
-setInterval(syncLogo, 250);
-})();
+                },
+                onerror: function() {
+                    if (myGen !== loadGen) return;
+                    if (item.isSaved) clearSavedLogoRoute(animeId);
+                    tryNext(idx + 1);
+                },
+                ontimeout: function() {
+                    if (myGen !== loadGen) return;
+                    tryNext(idx + 1);
+                }
+            };
+            if (bypassCache) {
+                req.nocache = true;
+                req.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+                req.headers['Pragma'] = 'no-cache';
+            }
+            GM_xmlhttpRequest(req);
+        }
 
+        tryNext(0);
+    }
+
+    function syncLogo() {
+        var host = document.getElementById('cr-poster-host');
+        if (!host || !host.shadowRoot) {
+            activeAnimeId = null;
+            isLoading = false;
+            return;
+        }
+
+        var animeId = host.getAttribute('data-anime-id');
+        if (!animeId || failedLogoIds[animeId]) {
+            return;
+        }
+
+        var statusEl = host.shadowRoot.getElementById('st');
+        var canvasEl = host.shadowRoot.querySelector('.bg-canvas');
+        var isPosterLoaded = (statusEl && statusEl.style.display === 'none') ||
+                             (canvasEl && canvasEl.width > 0 && canvasEl.height > 0);
+
+        if (!isPosterLoaded) return;
+
+        if (activeAnimeId !== animeId && !isLoading) {
+            activeAnimeId = animeId;
+            isLoading = true;
+            loadLogoWithCache(host.shadowRoot, animeId);
+        }
+    }
+
+    setInterval(syncLogo, 250);
+})();
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Logo Overlay
+// @namespace    http://tampermonkey.net
+// @version      10.1
+// @description  Быстрая загрузка логотипов из Logo / LogoCNT + кэширование + сброс по кнопке в nav
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @connect      *
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var USER = 'Ruroll';
+    var REPO = 'WB35RWQwFRFijt000IMG';
+    var LOGO_CACHE_NAME = 'cr-logos-cache-v8';
+
+    var activeAnimeId = null;
+    var isLoading = false;
+    var logoGen = 0;
+    var loadedLogoCache = {};
+    var failedLogoIds = {};
+    var forceFreshForId = {};
+
+    var PROTO = 'https' + '://';
+    var BASE_RAWGH = PROTO + 'raw' + '.githubusercontent' + '.com/' + USER + '/' + REPO + '/main/';
+    var BASE_STATICALLY = PROTO + 'cdn' + '.statically' + '.io/gh/' + USER + '/' + REPO + '/main/';
+
+    function getSavedLogoRoute(animeId) {
+        try {
+            if (typeof GM_getValue === 'function') {
+                var raw = GM_getValue('cr_logo_route_v8_' + animeId, '');
+                if (raw) return JSON.parse(raw);
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function saveLogoRoute(animeId, url, align) {
+        try {
+            if (typeof GM_setValue === 'function') {
+                GM_setValue('cr_logo_route_v8_' + animeId, JSON.stringify({ url: url, align: align }));
+            }
+        } catch (e) {}
+    }
+
+    function clearSavedLogoRoute(animeId) {
+        try {
+            if (typeof GM_setValue === 'function') {
+                GM_setValue('cr_logo_route_v8_' + animeId, '');
+            }
+        } catch (e) {}
+    }
+
+    function readLogoFromCache(animeId) {
+        if (!('caches' in window)) return Promise.resolve(null);
+        return caches.open(LOGO_CACHE_NAME).then(function(cache) {
+            return cache.match('https://cr-logo-cache.local/' + animeId).then(function(resp) {
+                if (!resp) return null;
+                var align = resp.headers.get('X-CR-Logo-Align') || 'left';
+                return resp.blob().then(function(blob) {
+                    return { blob: blob, align: align };
+                });
+            });
+        }).catch(function() {
+            return null;
+        });
+    }
+
+    function saveLogoToCache(animeId, blob, align) {
+        if (!('caches' in window)) return;
+        caches.open(LOGO_CACHE_NAME).then(function(cache) {
+            var resp = new Response(blob, {
+                headers: {
+                    'Content-Type': blob.type || 'image/png',
+                    'X-CR-Logo-Align': align
+                }
+            });
+            cache.put('https://cr-logo-cache.local/' + animeId, resp);
+        }).catch(function() {});
+    }
+
+    function clearLogoCache(animeId) {
+        if (!('caches' in window)) return Promise.resolve();
+        return caches.open(LOGO_CACHE_NAME).then(function(cache) {
+            return cache.delete('https://cr-logo-cache.local/' + animeId);
+        }).catch(function() {});
+    }
+
+    window.addEventListener('cr-reset-page-cache', function(e) {
+        var resetId = e && e.detail && e.detail.animeId;
+        if (!resetId) return;
+        delete loadedLogoCache[resetId];
+        delete failedLogoIds[resetId];
+        clearSavedLogoRoute(resetId);
+        forceFreshForId[resetId] = true;
+        logoGen++;
+        isLoading = false;
+        if (activeAnimeId === resetId) {
+            activeAnimeId = null;
+        }
+        var host = document.getElementById('cr-poster-host');
+        if (host && host.shadowRoot) {
+            var oldImg = host.shadowRoot.getElementById('cr-anime-logo');
+            if (oldImg) oldImg.remove();
+        }
+        clearLogoCache(resetId);
+    });
+        function ensureLogoStyle(shadow) {
+        if (shadow.getElementById('cr-logo-style')) return;
+        var st = document.createElement('style');
+        st.id = 'cr-logo-style';
+        st.textContent =
+            '.cr-top-logo {' +
+            '  position: absolute;' +
+            '  top: 3.2vw;' +
+            '  left: 4.9%;' +
+            '  z-index: 4;' +
+            '  max-width: 440px;' +
+            '  max-height: 195px;' +
+            '  width: auto;' +
+            '  height: auto;' +
+            '  object-fit: contain;' +
+            '  object-position: left top;' +
+            '  pointer-events: none;' +
+            '  user-select: none;' +
+            '  filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.85));' +
+            '}' +
+            '.cr-top-logo.is-center {' +
+            '  left: 50%;' +
+            '  transform: translateX(-50%);' +
+            '  object-position: center top;' +
+            '}' +
+            '@media (max-width: 960px) {' +
+            '  .cr-top-logo {' +
+            '    top: 16px;' +
+            '    max-width: 260px;' +
+            '    max-height: 120px;' +
+            '  }' +
+            '}';
+        shadow.appendChild(st);
+    }
+
+    function renderLogo(shadow, animeId, blob, alignMode) {
+        var host = document.getElementById('cr-poster-host');
+        if (!host || host.getAttribute('data-anime-id') !== animeId) return;
+
+        var bannerBox = shadow.getElementById('cr-banner');
+        if (!bannerBox) return;
+
+        ensureLogoStyle(shadow);
+
+        var existing = shadow.getElementById('cr-anime-logo');
+        if (existing) {
+            if (existing.src && existing.src.startsWith('blob:')) {
+                URL.revokeObjectURL(existing.src);
+            }
+            existing.remove();
+        }
+
+        var objectUrl = URL.createObjectURL(blob);
+        var img = document.createElement('img');
+        img.id = 'cr-anime-logo';
+        img.className = 'cr-top-logo' + (alignMode === 'center' ? ' is-center' : '');
+        img.setAttribute('data-logo-id', animeId);
+        img.alt = '';
+        img.src = objectUrl;
+
+        bannerBox.appendChild(img);
+    }
+
+    function loadLogoWithCache(shadow, animeId) {
+        var myGen = ++logoGen;
+        var bypass = !!forceFreshForId[animeId];
+        delete forceFreshForId[animeId];
+
+        if (!bypass && loadedLogoCache[animeId]) {
+            var mem = loadedLogoCache[animeId];
+            renderLogo(shadow, animeId, mem.blob, mem.align);
+            isLoading = false;
+            return;
+        }
+
+        if (bypass) {
+            startLogoNetworkLoad(shadow, animeId, true, myGen);
+            return;
+        }
+
+        readLogoFromCache(animeId).then(function(cached) {
+            if (myGen !== logoGen) return;
+            if (cached && cached.blob && cached.blob.size > 100) {
+                loadedLogoCache[animeId] = cached;
+                renderLogo(shadow, animeId, cached.blob, cached.align);
+                isLoading = false;
+            } else {
+                startLogoNetworkLoad(shadow, animeId, false, myGen);
+            }
+        });
+    }
+
+    function startLogoNetworkLoad(shadow, animeId, bypassCache, myGen) {
+        var savedRoute = bypassCache ? null : getSavedLogoRoute(animeId);
+        var exts = ['.png', '.jpg', '.JPG', '.jpeg', '.webp', '.PNG', '.WEBP'];
+        var queue = [];
+
+        if (savedRoute && savedRoute.url) {
+            queue.push({ url: savedRoute.url, align: savedRoute.align || 'left', isSaved: true });
+        }
+
+        exts.forEach(function(ext) {
+            queue.push({ url: BASE_RAWGH + 'Logo/' + animeId + ext, align: 'left' });
+        });
+        exts.forEach(function(ext) {
+            queue.push({ url: BASE_RAWGH + 'LogoCNT/' + animeId + ext, align: 'center' });
+        });
+        ['.png', '.jpg', '.webp'].forEach(function(ext) {
+            queue.push({ url: BASE_STATICALLY + 'Logo/' + animeId + ext, align: 'left' });
+            queue.push({ url: BASE_STATICALLY + 'LogoCNT/' + animeId + ext, align: 'center' });
+        });
+
+        function tryNext(idx) {
+            if (myGen !== logoGen) return;
+            if (idx >= queue.length || activeAnimeId !== animeId) {
+                if (idx >= queue.length) failedLogoIds[animeId] = true;
+                isLoading = false;
+                return;
+            }
+            var item = queue[idx];
+            var req = {
+                method: 'GET',
+                url: item.url,
+                headers: { 'Accept': 'image/*' },
+                responseType: 'blob',
+                timeout: 30000,
+                onload: function(res) {
+                    if (myGen !== logoGen) return;
+                    if (res.status === 200 && res.response && res.response.size > 100) {
+                        var blob = res.response;
+                        createImageBitmap(blob).then(function(bmp) {
+                            if (bmp && typeof bmp.close === 'function') bmp.close();
+                            if (myGen !== logoGen) return;
+                            loadedLogoCache[animeId] = { blob: blob, align: item.align };
+                            saveLogoToCache(animeId, blob, item.align);
+                            saveLogoRoute(animeId, item.url, item.align);
+                            if (activeAnimeId === animeId) {
+                                renderLogo(shadow, animeId, blob, item.align);
+                            }
+                            isLoading = false;
+                        }).catch(function() {
+                            if (item.isSaved) clearSavedLogoRoute(animeId);
+                            tryNext(idx + 1);
+                        });
+                    } else {
+                        if (item.isSaved) clearSavedLogoRoute(animeId);
+                        tryNext(idx + 1);
+                    }
+                },
+                onerror: function() {
+                    if (myGen !== logoGen) return;
+                    if (item.isSaved) clearSavedLogoRoute(animeId);
+                    tryNext(idx + 1);
+                },
+                ontimeout: function() {
+                    if (myGen !== logoGen) return;
+                    tryNext(idx + 1);
+                }
+            };
+            if (bypassCache) {
+                req.nocache = true;
+                req.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+                req.headers['Pragma'] = 'no-cache';
+            }
+            GM_xmlhttpRequest(req);
+        }
+
+        tryNext(0);
+    }
+
+    function syncLogo() {
+        var host = document.getElementById('cr-poster-host');
+        if (!host || !host.shadowRoot) {
+            activeAnimeId = null;
+            isLoading = false;
+            return;
+        }
+
+        var animeId = host.getAttribute('data-anime-id');
+        if (!animeId || failedLogoIds[animeId]) {
+            return;
+        }
+
+        var statusEl = host.shadowRoot.getElementById('st');
+        var canvasEl = host.shadowRoot.querySelector('.bg-canvas');
+        var isPosterLoaded = (statusEl && statusEl.style.display === 'none') ||
+                             (canvasEl && canvasEl.width > 0 && canvasEl.height > 0);
+
+        if (!isPosterLoaded) return;
+
+        if (activeAnimeId !== animeId && !isLoading) {
+            activeAnimeId = animeId;
+            isLoading = true;
+            loadLogoWithCache(host.shadowRoot, animeId);
+        }
+    }
+
+    setInterval(syncLogo, 250);
+})();
