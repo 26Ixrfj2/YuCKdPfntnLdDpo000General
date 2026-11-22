@@ -1397,16 +1397,18 @@
 
     setInterval(syncLogo, 250);
 })();
+
 // ==UserScript==
-// @name         Anime 365 Crunchyroll Franchise Episodes
+// @name         Anime 365 Crunchyroll Franchise Core
 // @namespace    http://tampermonkey.net
-// @version      6.3
-// @description  Мгновенная загрузка серий франшиз с постоянным индексом репозитория, крупной типографикой и инфо-панелью
+// @version      1.2
+// @description  Ядро франшиз: поиск папок в GitHub, кэширование превью, загрузка episodes.js и защита описания в баннере при возврате Назад
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // @connect      *
 // ==/UserScript==
 
@@ -1432,13 +1434,13 @@
     var metaCache = {};
     var indexPromise = null;
     var memBlobCache = {};
-    var renderGen = 0;
+    var lastRestoredHref = '';
 
     function getAnimeId() {
         var path = window.location.pathname.replace(/\/+$/, '');
         var segments = path.split('/').filter(Boolean);
-        if (segments.length !== 2 || segments[0] !== 'catalog') return null;
-        var slug = segments[1];
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
         var dashIdx = slug.lastIndexOf('-');
         if (dashIdx === -1) return null;
         var id = slug.slice(dashIdx + 1);
@@ -1511,7 +1513,6 @@
         } catch (e) {}
         return !!map[animeId][code];
     }
-
     function getCachedThumbUrl(cacheKey) {
         if (memBlobCache[cacheKey]) return Promise.resolve(memBlobCache[cacheKey]);
         if (!('caches' in window)) return Promise.resolve(null);
@@ -1541,41 +1542,6 @@
         return u;
     }
 
-    window.addEventListener('cr-reset-page-cache', function(e) {
-        var resetId = e && e.detail && e.detail.animeId;
-        folderCache = {};
-        extCache = {};
-        metaCache = {};
-        indexPromise = null;
-        renderGen++;
-        try {
-            if (typeof GM_setValue === 'function') {
-                GM_setValue(FOLDER_CACHE_KEY, '');
-                GM_setValue(EXT_CACHE_KEY, '');
-            }
-        } catch (err) {}
-
-        if ('caches' in window && resetId) {
-            caches.open(THUMB_CACHE_NAME).then(function(cache) {
-                cache.keys().then(function(reqs) {
-                    reqs.forEach(function(r) {
-                        if (r.url.indexOf('/' + resetId + '/') !== -1) cache.delete(r);
-                    });
-                });
-            }).catch(function() {});
-        }
-
-        Object.keys(memBlobCache).forEach(function(k) {
-            if (!resetId || k.indexOf('/' + resetId + '/') !== -1) {
-                URL.revokeObjectURL(memBlobCache[k]);
-                delete memBlobCache[k];
-            }
-        });
-
-        var oldBlock = document.getElementById('cr-franchise-episodes-section');
-        if (oldBlock) oldBlock.remove();
-    });
-
     function fetchText(url, timeoutMs) {
         return new Promise(function(resolve) {
             try {
@@ -1601,7 +1567,8 @@
             var href = a.getAttribute('href') || '';
             var idx = href.indexOf('/tree/main/');
             if (idx === -1) return;
-            var relEncoded = href.slice(idx + '/tree/main/'.length).split('?')[0].split('#')[0];
+            var rawSub = href.slice(idx + '/tree/main/'.length);
+            var relEncoded = rawSub.split('?').at(0).split('#').at(0);
             try {
                 var decoded = decodeURIComponent(relEncoded);
                 if (links.indexOf(decoded) === -1) links.push(decoded);
@@ -1623,8 +1590,8 @@
                             if (node.type === 'tree' && node.path && node.path.indexOf('Franchise/') === 0) {
                                 var parts = node.path.split('/');
                                 if (parts.length === 3) {
-                                    var m = parts[2].match(/^(\d+)(?:\s|\[|$)/);
-                                    if (m) foundMap[m[1]] = node.path;
+                                    var m = parts.at(2).match(/^(\d+)(?:\s|\[|$)/);
+                                    if (m) foundMap[m.at(1)] = node.path;
                                 }
                             }
                         });
@@ -1651,162 +1618,387 @@
                         subPaths.forEach(function(sp) {
                             var folderName = sp.split('/').pop() || '';
                             var m = folderName.match(/^(\d+)(?:\s|\[|$)/);
-                            if (m) localMap[m[1]] = sp;
-                            });
-return localMap;
-});
-})).then(function(maps) {
-var merged = {};
-maps.forEach(function(m) { Object.assign(merged, m); });
-if (Object.keys(merged).length > 0) {
-return saveAllFolders(merged);
-}
-return {};
-});
-});
-}).then(function(res) {
-indexPromise = null;
-return res;
-}).catch(function() {
-indexPromise = null;
-return {};
-});
-return indexPromise;
-}
-function findTitleFolder(animeId) {
-var saved = loadSavedFolders();
-if (saved[animeId]) return Promise.resolve(saved[animeId]);
-return buildFullFranchiseIndex().then(function(map) {
-return (map && map[animeId]) || null;
-});
-}
-function parseEpisodesScriptText(rawText) {
-if (!rawText) return {};
-var trimmed = rawText.trim();
-try {
-if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
-return JSON.parse(trimmed);
-}
-} catch (e) {}
-var firstBrace = trimmed.indexOf('{');
-var lastBrace = trimmed.lastIndexOf('}');
-if (firstBrace !== -1 && lastBrace > firstBrace) {
-var objLiteral = trimmed.slice(firstBrace, lastBrace + 1);
-try {
-return (new Function('return (' + objLiteral + ');'))();
-} catch (e) {}
-}
-return {};
-}
-function loadEpisodesMetadata(animeId, folderPath) {
-if (metaCache[animeId]) return Promise.resolve(metaCache[animeId]);
-var encodedJs = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.js';
-var encodedJson = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.json';
-return fetchText(BASE_STATICALLY + encodedJs, 12000)
-.then(function(txt) { return txt || fetchText(BASE_RAWGH + encodedJs, 12000); })
-.then(function(txt) { return txt || fetchText(BASE_STATICALLY + encodedJson, 12000); })
-.then(function(txt) { return txt || fetchText(BASE_RAWGH + encodedJson, 12000); })
-.then(function(txt) {
-var parsed = parseEpisodesScriptText(txt);
-metaCache[animeId] = (parsed && typeof parsed === 'object') ? parsed : {};
-return metaCache[animeId];
-}).catch(function() {
-metaCache[animeId] = {};
-return {};
-});
-}
+                            if (m) localMap[m.at(1)] = sp;
+                        });
+                        return localMap;
+                    });
+                })).then(function(maps) {
+                    var merged = {};
+                    maps.forEach(function(m) { Object.assign(merged, m); });
+                    if (Object.keys(merged).length > 0) {
+                        return saveAllFolders(merged);
+                    }
+                    return {};
+                });
+            });
+        }).then(function(res) {
+            indexPromise = null;
+            return res;
+        }).catch(function() {
+            indexPromise = null;
+            return {};
+        });
+
+        return indexPromise;
+    }
+
+    function findTitleFolder(animeId) {
+        var saved = loadSavedFolders();
+        if (saved[animeId]) return Promise.resolve(saved[animeId]);
+        return buildFullFranchiseIndex().then(function(map) {
+            return (map && map[animeId]) || null;
+        });
+    }
+    function parseEpisodesScriptText(rawText) {
+        if (!rawText) return {};
+        var trimmed = rawText.trim();
+        try {
+            if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+                return JSON.parse(trimmed);
+            }
+        } catch (e) {}
+
+        var firstBrace = trimmed.indexOf('{');
+        var lastBrace = trimmed.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+            var objLiteral = trimmed.slice(firstBrace, lastBrace + 1);
+            try {
+                return (new Function('return (' + objLiteral + ');'))();
+            } catch (e) {}
+        }
+        return {};
+    }
+
+    function loadEpisodesMetadata(animeId, folderPath) {
+        if (metaCache[animeId]) return Promise.resolve(metaCache[animeId]);
+        var encodedJs = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.js';
+        var encodedJson = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes.json';
+
+        return fetchText(BASE_STATICALLY + encodedJs, 12000)
+            .then(function(txt) { return txt || fetchText(BASE_RAWGH + encodedJs, 12000); })
+            .then(function(txt) { return txt || fetchText(BASE_STATICALLY + encodedJson, 12000); })
+            .then(function(txt) { return txt || fetchText(BASE_RAWGH + encodedJson, 12000); })
+            .then(function(txt) {
+                var parsed = parseEpisodesScriptText(txt);
+                metaCache[animeId] = (parsed && typeof parsed === 'object') ? parsed : {};
+                return metaCache[animeId];
+            }).catch(function() {
+                metaCache[animeId] = {};
+                return {};
+            });
+    }
+
+    function loadAndCacheThumb(imgEl, cardEl, animeId, folderPath, fileCode) {
+        var cacheKey = 'https://cr-ep-thumb.local' + animeId + '/' + fileCode;
+        getCachedThumbUrl(cacheKey).then(function(cachedUrl) {
+            if (cachedUrl) {
+                imgEl.src = cachedUrl;
+                return;
+            }
+
+            var encodedBase = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes/' + encodeURIComponent(fileCode);
+            var prefExt = getPreferredExt(animeId);
+            var exts = ['.png', '.jpg', '.webp'];
+            if (prefExt && exts.indexOf(prefExt) !== -1) {
+                exts = [prefExt].concat(exts.filter(function(x) { return x !== prefExt; }));
+            }
+
+            var candidates = [];
+            exts.forEach(function(ext) { candidates.push({ url: BASE_STATICALLY + encodedBase + ext, ext: ext }); });
+            exts.forEach(function(ext) { candidates.push({ url: BASE_RAWGH + encodedBase + ext, ext: ext }); });
+
+            var idx = 0;
+            function tryNext() {
+                if (idx >= candidates.length) {
+                    cardEl.style.display = 'none';
+                    return;
+                }
+                var item = candidates.at(idx++);
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: item.url,
+                        responseType: 'blob',
+                        timeout: 15000,
+                        onload: function(res) {
+                            if (res.status === 200 && res.response && res.response.size > 100) {
+                                savePreferredExt(animeId, item.ext);
+                                imgEl.src = saveThumbToCache(cacheKey, res.response);
+                            } else {
+                                tryNext();
+                            }
+                        },
+                        onerror: tryNext,
+                        ontimeout: tryNext
+                    });
+                } catch (e) {
+                    tryNext();
+                }
+            }
+            tryNext();
+        });
+    }
+
+    // Восстановление описания в баннере при возврате стрелкой «Назад» в браузере
+    function ensureBannerDescriptionIntact() {
+        var animeId = getAnimeId();
+        if (!animeId) return;
+
+        var host = document.getElementById('cr-poster-host');
+        if (!host || !host.shadowRoot) return;
+
+        var grid = host.shadowRoot.getElementById('cr-grid');
+        var descText = grid ? (grid.textContent || '').trim() : '';
+
+        if (grid && descText.length === 0) {
+            var sourceBlock = document.querySelector('.m-catalog-item-description') ||
+                              document.querySelector('.card-content p');
+            if (sourceBlock && (sourceBlock.textContent || '').trim().length > 0) {
+                host.remove();
+            }
+        }
+    }
+
+    window.addEventListener('pageshow', function() {
+        setTimeout(ensureBannerDescriptionIntact, 80);
+        setTimeout(ensureBannerDescriptionIntact, 350);
+    });
+    window.addEventListener('popstate', function() {
+        setTimeout(ensureBannerDescriptionIntact, 80);
+        setTimeout(ensureBannerDescriptionIntact, 350);
+    });
+    setInterval(function() {
+        if (location.href !== lastRestoredHref) {
+            lastRestoredHref = location.href;
+            setTimeout(ensureBannerDescriptionIntact, 250);
+        }
+        ensureBannerDescriptionIntact();
+    }, 450);
+
+    window.addEventListener('cr-reset-page-cache', function(e) {
+        var resetId = e && e.detail && e.detail.animeId;
+        folderCache = {};
+        extCache = {};
+        metaCache = {};
+        indexPromise = null;
+        try {
+            if (typeof GM_setValue === 'function') {
+                GM_setValue(FOLDER_CACHE_KEY, '');
+                GM_setValue(EXT_CACHE_KEY, '');
+            }
+        } catch (err) {}
+
+        if ('caches' in window && resetId) {
+            caches.open(THUMB_CACHE_NAME).then(function(cache) {
+                cache.keys().then(function(reqs) {
+                    reqs.forEach(function(r) {
+                        if (r.url.indexOf('/' + resetId + '/') !== -1) cache.delete(r);
+                    });
+                });
+            }).catch(function() {});
+        }
+
+        Object.keys(memBlobCache).forEach(function(k) {
+            if (!resetId || k.indexOf('/' + resetId + '/') !== -1) {
+                URL.revokeObjectURL(memBlobCache[k]);
+                delete memBlobCache[k];
+            }
+        });
+    });
+
+    var targetWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+    targetWin.CRFranchiseCore = {
+        getAnimeId: getAnimeId,
+        findTitleFolder: findTitleFolder,
+        loadEpisodesMetadata: loadEpisodesMetadata,
+        loadAndCacheThumb: loadAndCacheThumb,
+        isEpisodeWatched: isEpisodeWatched,
+        toggleEpisodeWatched: toggleEpisodeWatched
+    };
+})();
+
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Franchise UI
+// @namespace    http://tampermonkey.net
+// @version      1.4
+// @description  Карточки серий 6 в ряд, выравнивание 24 МИН по базовой линии, контрастный шрифт без свечения и оранжевый Play на превью
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        unsafeWindow
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var renderGen = 0;
+
     function ensureFranchiseStyles() {
         if (document.getElementById('cr-franchise-ep-style')) return;
         var st = document.createElement('style');
         st.id = 'cr-franchise-ep-style';
         st.textContent =
+            '#cr-franchise-episodes-section, #cr-franchise-episodes-section * {' +
+            '  text-shadow: none !important;' +
+            '  -webkit-font-smoothing: antialiased !important;' +
+            '  -moz-osx-font-smoothing: grayscale !important;' +
+            '}' +
             '#cr-franchise-episodes-section {' +
             '  display: block !important; width: 100% !important; background: #000000 !important; color: #ffffff !important;' +
             '  padding: 28px 4.9% 64px 4.9% !important; margin: 0 0 24px 0 !important; box-sizing: border-box !important;' +
-            '  font-family: Roboto, Lato, sans-serif !important; border-bottom: 1px solid rgba(255,255,255,0.12) !important; clear: both !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important; border-bottom: 1px solid rgba(255,255,255,0.12) !important; clear: both !important;' +
             '}' +
             '.cr-ep-section-header { display: block !important; font-size: 24px !important; font-weight: 700 !important; color: #ffffff !important; margin-bottom: 20px !important; }' +
-            '.cr-ep-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)) !important; gap: 30px 20px !important; width: 100% !important; }' +
-            '.cr-ep-card { position: relative !important; display: flex !important; flex-direction: column !important; background: #000000 !important; overflow: visible !important; }' +
-            '.cr-ep-main-link { display: flex !important; flex-direction: column !important; text-decoration: none !important; color: #ffffff !important; }' +
-            '.cr-ep-thumb-wrap { position: relative !important; width: 100% !important; aspect-ratio: 16 / 10 !important; background: #141519 !important; overflow: hidden !important; }' +
-            '.cr-ep-thumb { display: block !important; width: 100% !important; height: 100% !important; object-fit: cover !important; transition: transform 0.25s ease, filter 0.22s ease !important; }' +
-            '.cr-ep-card:hover .cr-ep-thumb { transform: scale(1.04); filter: brightness(0.85); }' +
 
-            '.cr-ep-duration {' +
-            '  position: absolute !important; bottom: 8px !important; right: 8px !important;' +
-            '  background: rgba(0,0,0,0.88) !important; color: #ffffff !important;' +
-            '  font-size: 14px !important; font-weight: 700 !important; padding: 4px 9px !important;' +
-            '  z-index: 2 !important; letter-spacing: 0.4px !important; text-transform: uppercase !important;' +
+            '.cr-ep-grid {' +
+            '  display: grid !important;' +
+            '  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;' +
+            '  gap: 28px 16px !important;' +
+            '  width: 100% !important;' +
             '}' +
-            '.cr-ep-watched-badge { position: absolute !important; top: 8px !important; left: 8px !important; background: rgba(0,0,0,0.88) !important; color: #66bb6a !important; font-size: 11px !important; font-weight: 700 !important; padding: 3px 8px !important; z-index: 2 !important; display: none; text-transform: uppercase !important; }' +
+            '@media (max-width: 1360px) { .cr-ep-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; } }' +
+            '@media (max-width: 900px) { .cr-ep-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }' +
+
+            '.cr-ep-card { position: relative !important; display: flex !important; flex-direction: column !important; background: #000000 !important; overflow: visible !important; }' +
+            '.cr-ep-thumb-link { display: block !important; text-decoration: none !important; color: #ffffff !important; }' +
+            '.cr-ep-thumb-wrap { position: relative !important; width: 100% !important; aspect-ratio: 16 / 10 !important; background: #141519 !important; overflow: hidden !important; }' +
+            '.cr-ep-thumb {' +
+            '  display: block !important; width: 100% !important; height: 100% !important;' +
+            '  object-fit: cover !important; object-position: center center !important;' +
+            '  transition: transform 0.25s ease, filter 0.25s ease !important;' +
+            '}' +
+            '.cr-ep-thumb-wrap:hover .cr-ep-thumb { transform: scale(1.04); filter: brightness(0.84); }' +
+
+            /* Длительность: цифра и МИН лежат на одной базовой линии, контрастный шрифт без размытия */
+            '.cr-ep-duration {' +
+            '  position: absolute !important; bottom: 7px !important; right: 7px !important;' +
+            '  height: 22px !important; padding: 0 7px !important;' +
+            '  background: rgba(0, 0, 0, 0.72) !important; color: #ffffff !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important;' +
+            '  font-weight: 700 !important; letter-spacing: 0.3px !important;' +
+            '  display: inline-flex !important; align-items: center !important; justify-content: center !important;' +
+            '  z-index: 6 !important; opacity: 1; transition: opacity 0.2s ease !important; pointer-events: none !important;' +
+            '}' +
+            '.cr-ep-dur-inner {' +
+            '  display: inline-flex !important; align-items: baseline !important; gap: 3px !important; line-height: 1 !important;' +
+            '}' +
+            '.cr-ep-dur-num { font-size: 13px !important; font-weight: 700 !important; line-height: 1 !important; color: #ffffff !important; }' +
+            '.cr-ep-dur-unit { font-size: 10px !important; font-weight: 700 !important; line-height: 1 !important; color: #ffffff !important; text-transform: uppercase !important; }' +
+            '.cr-ep-thumb-wrap:hover .cr-ep-duration { opacity: 0 !important; }' +
+
+            '.cr-ep-watched-badge { position: absolute !important; bottom: 7px !important; left: 7px !important; background: rgba(0,0,0,0.82) !important; color: #f47521 !important; font-size: 10px !important; font-weight: 700 !important; padding: 2px 6px !important; z-index: 6 !important; display: none; text-transform: uppercase !important; }' +
             '.cr-ep-card.is-watched .cr-ep-watched-badge { display: inline-block !important; }' +
             '.cr-ep-card.is-watched .cr-ep-thumb { opacity: 0.65; }' +
 
+            /* Оранжевый треугольник Play: появляется ТОЛЬКО при наведении на картинку серии */
             '.cr-ep-play-badge {' +
-            '  position: absolute !important; inset: 0 !important; display: flex !important; align-items: center !important; justify-content: center !important;' +
-            '  opacity: 0; transition: opacity 0.2s ease !important; pointer-events: none !important; z-index: 4 !important;' +
-            '}' +
-            '.cr-ep-card:hover .cr-ep-play-badge { opacity: 1 !important; }' +
-            '.cr-ep-play-triangle {' +
-            '  width: 0 !important; height: 0 !important;' +
-            '  border-top: 20px solid transparent !important;' +
-            '  border-bottom: 20px solid transparent !important;' +
-            '  border-left: 34px solid #000000 !important;' +
-            '  margin-left: 6px !important;' +
-            '  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.65)) !important;' +
-            '}' +
-
-            '.cr-ep-bottom-bar { position: relative !important; display: flex !important; align-items: flex-start !important; justify-content: space-between !important; gap: 8px !important; padding: 12px 2px 6px 2px !important; min-height: 82px !important; }' +
-            '.cr-ep-base-meta { display: flex !important; flex-direction: column !important; gap: 5px !important; flex: 1 1 auto !important; min-width: 0 !important; }' +
-            '.cr-ep-num { display: block !important; font-size: 17px !important; font-weight: 700 !important; line-height: 1.25 !important; color: #b5b5b5 !important; }' +
-            '.cr-ep-base-title { display: -webkit-box !important; -webkit-line-clamp: 2 !important; -webkit-box-orient: vertical !important; overflow: hidden !important; font-size: 17px !important; font-weight: 700 !important; line-height: 1.3 !important; color: #ffffff !important; transition: color 0.15s ease !important; }' +
-            '.cr-ep-card:hover .cr-ep-base-title { color: #f47521 !important; }' +
-
-            '.cr-ep-menu-anchor { position: relative !important; align-self: flex-end !important; flex-shrink: 0 !important; z-index: 25 !important; }' +
-            '.cr-ep-dots-btn {' +
-            '  width: 36px !important; height: 36px !important; background: transparent !important; background-color: transparent !important;' +
-            '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
-            '  color: #a0a0a0 !important; font-size: 24px !important; line-height: 1 !important; cursor: pointer !important;' +
+            '  position: absolute !important; top: 10px !important; left: 10px !important;' +
             '  display: flex !important; align-items: center !important; justify-content: center !important;' +
-            '  opacity: 0; transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease !important;' +
+            '  opacity: 0; transition: opacity 0.2s ease !important; pointer-events: none !important; z-index: 8 !important;' +
+            '}' +
+            '.cr-ep-thumb-wrap:hover .cr-ep-play-badge { opacity: 1 !important; }' +
+            '.cr-ep-play-triangle {' +
+            '  display: block !important; width: 0 !important; height: 0 !important;' +
+            '  border-style: solid !important;' +
+            '  border-width: 10px 0 10px 18px !important;' +
+            '  border-color: transparent transparent transparent #f47521 !important;' +
+            '  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.85)) !important;' +
+            '}' +
+
+            /* Нижний блок карточки: контрастный текст без свечения */
+            '.cr-ep-bottom-bar {' +
+            '  position: relative !important; display: flex !important; align-items: flex-start !important; justify-content: space-between !important;' +
+            '  gap: 6px !important; padding: 10px 2px 4px 2px !important; min-height: 76px !important;' +
+            '  opacity: 1; visibility: visible; transition: opacity 0.22s ease !important;' +
+            '}' +
+            '.cr-ep-card.is-thumb-hovered .cr-ep-bottom-bar,' +
+            '.cr-ep-card.is-neighbor-covered .cr-ep-bottom-bar,' +
+            '.cr-ep-card:has(.cr-ep-thumb-wrap:hover) .cr-ep-bottom-bar {' +
+            '  opacity: 0 !important; visibility: hidden !important; pointer-events: none !important;' +
+            '}' +
+            '.cr-ep-base-meta { display: flex !important; flex-direction: column !important; gap: 4px !important; flex: 1 1 auto !important; min-width: 0 !important; }' +
+            '.cr-ep-num { display: block !important; font-size: 13px !important; font-weight: 700 !important; line-height: 1.25 !important; color: #a0a0a0 !important; text-transform: uppercase !important; }' +
+            '.cr-ep-base-title-link { text-decoration: none !important; color: inherit !important; display: block !important; }' +
+            '.cr-ep-base-title {' +
+            '  display: -webkit-box !important; -webkit-line-clamp: 2 !important; -webkit-box-orient: vertical !important; overflow: hidden !important;' +
+            '  font-size: 13px !important; font-weight: 700 !important; line-height: 1.3 !important; color: #ffffff !important;' +
+            '  text-transform: uppercase !important; transition: color 0.15s ease !important;' +
+            '}' +
+            '.cr-ep-card:hover .cr-ep-base-title, .cr-ep-base-title-link:hover .cr-ep-base-title { color: #f47521 !important; }' +
+
+            /* Три точки и квадратное меню */
+            '.cr-ep-menu-anchor { position: relative !important; align-self: flex-end !important; flex-shrink: 0 !important; z-index: 25 !important; }' +
+            '.cr-ep-dots-btn, .cr-ep-dots-btn:focus, .cr-ep-dots-btn:active {' +
+            '  width: 32px !important; height: 32px !important; background: transparent !important; background-color: transparent !important;' +
+            '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
+            '  color: rgba(255, 255, 255, 0.72) !important; font-size: 22px !important; line-height: 1 !important; cursor: pointer !important;' +
+            '  display: flex !important; align-items: center !important; justify-content: center !important;' +
+            '  opacity: 0; transition: opacity 0.15s ease, color 0.15s ease !important;' +
             '}' +
             '.cr-ep-card:hover .cr-ep-dots-btn, .cr-ep-dots-btn.is-active { opacity: 1 !important; }' +
-            '.cr-ep-dots-btn:hover { color: #ffffff !important; background: transparent !important; background-color: transparent !important; }' +
-            '.cr-ep-dots-btn.is-active, .cr-ep-dots-btn.is-active:hover { background: #2e7d32 !important; background-color: #2e7d32 !important; color: #ffffff !important; }' +
+            '.cr-ep-dots-btn:hover, .cr-ep-dots-btn.is-active, .cr-ep-dots-btn.is-active:hover {' +
+            '  background: transparent !important; background-color: transparent !important; color: #ffffff !important;' +
+            '}' +
 
             '.cr-ep-popup-menu {' +
             '  position: absolute !important; right: 0 !important; top: 100% !important; margin-top: 0 !important;' +
-            '  background: #1f2229 !important; border: none !important; outline: none !important; box-shadow: 0 8px 24px rgba(0,0,0,0.95) !important;' +
-            '  border-radius: 0 !important; padding: 0 !important; min-width: 230px !important; display: none; z-index: 60 !important;' +
+            '  background: #1c1e24 !important; border: none !important; outline: none !important; box-shadow: 0 8px 24px rgba(0,0,0,0.95) !important;' +
+            '  border-radius: 0 !important; padding: 0 !important; min-width: 220px !important; display: none; z-index: 60 !important;' +
             '}' +
             '.cr-ep-popup-menu.is-open { display: block !important; }' +
-            '.cr-ep-popup-item {' +
+            '.cr-ep-popup-item, .cr-ep-popup-item:focus, .cr-ep-popup-item:active {' +
             '  width: 100% !important; background: transparent !important; background-color: transparent !important;' +
             '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
-            '  color: #ffffff !important; text-align: left !important; padding: 12px 14px !important;' +
-            '  font-size: 13px !important; font-weight: 500 !important; cursor: pointer !important; font-family: inherit !important; display: block !important;' +
-            '}' +
-            '.cr-ep-popup-item:hover { background: #2e7d32 !important; background-color: #2e7d32 !important; color: #ffffff !important; }' +
+'  color: rgba(255, 255, 255, 0.78) !important; text-align: left !important; padding: 11px 14px !important;' +
+'  font-size: 13px !important; font-weight: 500 !important; cursor: pointer !important; font-family: inherit !important; display: block !important;' +
+'  transition: color 0.12s ease !important;' +
+'}' +
+'.cr-ep-popup-item:hover {' +
+'  background: transparent !important; background-color: transparent !important; color: #ffffff !important;' +
+'}' +
+/* Инфо-панель поверх соседней карточки: уменьшен шрифт даты выхода (12px), контрастный шрифт */
+'.cr-ep-neighbor-panel {' +
+'  position: absolute !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;' +
+'  background: #000000 !important; color: #ffffff !important;' +
+'  padding: 0 12px 0 12px !important; display: flex !important; flex-direction: column !important; align-items: flex-start !important;' +
+'  justify-content: flex-start !important; z-index: 99 !important; pointer-events: none !important;' +
+'  opacity: 0; visibility: hidden; transition: opacity 0.25s ease !important; box-sizing: border-box !important; overflow: hidden !important;' +
+'}' +
+'.cr-ep-neighbor-panel.is-visible { opacity: 1 !important; visibility: visible !important; }' +
+'.cr-ep-np-num { display: block !important; width: 100% !important; font-size: 14px !important; font-weight: 700 !important; color: #a0a0a0 !important; text-transform: uppercase !important; line-height: 1.25 !important; margin: 0 0 8px 0 !important; padding: 0 !important; }' +
+'.cr-ep-np-title { display: block !important; width: 100% !important; font-size: 14px !important; font-weight: 700 !important; color: #f47521 !important; text-transform: uppercase !important; line-height: 1.3 !important; margin: 0 0 8px 0 !important; padding: 0 !important; }' +
+'.cr-ep-np-date { display: block !important; width: 100% !important; font-size: 12px !important; font-weight: 600 !important; color: #a0a0a0 !important; line-height: 1.2 !important; margin: 0 0 10px 0 !important; padding: 0 !important; }' +
+'.cr-ep-np-desc { display: -webkit-box !important; -webkit-line-clamp: 8 !important; -webkit-box-orient: vertical !important; overflow: hidden !important; width: 100% !important; font-size: 13px !important; font-weight: 400 !important; line-height: 1.42 !important; color: #ffffff !important; margin: 0 !important; padding: 0 !important; white-space: normal !important; }';
+document.head.appendChild(st);
+}
+    function renderDurationBadge(durEl, rawDur) {
+        if (!rawDur) {
+            durEl.style.display = 'none';
+            return;
+        }
+        var str = String(rawDur).trim();
+        var m = str.match(/^(\d+(?:[:.]\d+)?)\s*(.*)$/);
+        durEl.innerHTML = '';
+        var inner = document.createElement('span');
+        inner.className = 'cr-ep-dur-inner';
 
-            '.cr-ep-neighbor-panel {' +
-            '  position: absolute !important; inset: 0 !important; background: #000000 !important; color: #ffffff !important;' +
-            '  padding: 16px !important; display: flex !important; flex-direction: column !important; align-items: flex-start !important;' +
-            '  justify-content: flex-start !important; z-index: 35 !important; pointer-events: none !important;' +
-            '  opacity: 0; transition: opacity 0.15s ease !important; box-sizing: border-box !important;' +
-            '}' +
-            '.cr-ep-neighbor-panel.is-visible { opacity: 1 !important; }' +
-            '.cr-ep-np-num { display: block !important; width: 100% !important; font-size: 18px !important; font-weight: 700 !important; color: #ffffff !important; line-height: 1.25 !important; margin: 0 0 4px 0 !important; }' +
-            '.cr-ep-np-title { display: block !important; width: 100% !important; font-size: 18px !important; font-weight: 700 !important; color: #ffffff !important; line-height: 1.25 !important; margin: 0 0 8px 0 !important; }' +
-            '.cr-ep-np-date-row { display: flex !important; align-items: center !important; gap: 6px !important; width: 100% !important; font-size: 13px !important; color: #9e9e9e !important; line-height: 1.2 !important; margin: 0 0 14px 0 !important; }' +
-            '.cr-ep-np-cal-ico { width: 14px !important; height: 14px !important; fill: #9e9e9e !important; flex-shrink: 0 !important; }' +
-            '.cr-ep-np-desc { display: -webkit-box !important; -webkit-line-clamp: 6 !important; -webkit-box-orient: vertical !important; overflow: hidden !important; width: 100% !important; font-size: 13px !important; line-height: 1.45 !important; color: #dcdcdc !important; margin: 0 !important; white-space: normal !important; }';
-        document.head.appendChild(st);
-    }
+        if (m) {
+            var numSpan = document.createElement('span');
+            numSpan.className = 'cr-ep-dur-num';
+            numSpan.textContent = m.at(1);
+            inner.appendChild(numSpan);
 
-    function formatDurationUpper(rawDur) {
-        if (!rawDur) return '';
-        return String(rawDur).replace(/мин\.?/gi, 'МИН').trim().toUpperCase();
+            var unitText = (m.at(2) || 'МИН').replace(/\.$/, '').toUpperCase();
+            if (unitText) {
+                var unitSpan = document.createElement('span');
+                unitSpan.className = 'cr-ep-dur-unit';
+                unitSpan.textContent = unitText;
+                inner.appendChild(unitSpan);
+            }
+        } else {
+            inner.textContent = str.toUpperCase();
+        }
+        durEl.appendChild(inner);
+        durEl.style.display = 'inline-flex';
     }
 
     function detectEpisodeInfo(labelText, href) {
@@ -1816,325 +2008,345 @@ return {};
         }
         var numMatch = clean.match(/^(\d+)\s*серия/i) || (href || '').match(/\/(\d+)-seriya-/i);
         if (numMatch) {
-            var num = numMatch[1];
+            var num = numMatch.at(1);
             return {
                 num: num,
                 code: 'E' + num,
-                seriesLabel: num + ' серия',
+                seriesLabel: (num + ' СЕРИЯ'),
                 rawLabel: clean
             };
         }
         return null;
     }
-    function loadAndCacheThumb(imgEl, cardEl, animeId, folderPath, fileCode) {
-var cacheKey = 'cr-ep-thumb.local' + animeId + '/' + fileCode;
-getCachedThumbUrl(cacheKey).then(function(cachedUrl) {
-if (cachedUrl) {
-imgEl.src = cachedUrl;
-return;
-}
-var encodedBase = folderPath.split('/').map(encodeURIComponent).join('/') + '/episodes/' + encodeURIComponent(fileCode);
-var prefExt = getPreferredExt(animeId);
-var exts = ['.png', '.jpg', '.webp'];
-if (prefExt && exts.indexOf(prefExt) !== -1) {
-exts = [prefExt].concat(exts.filter(function(x) { return x !== prefExt; }));
-}
-var candidates = [];
-exts.forEach(function(ext) { candidates.push({ url: BASE_STATICALLY + encodedBase + ext, ext: ext }); });
-exts.forEach(function(ext) { candidates.push({ url: BASE_RAWGH + encodedBase + ext, ext: ext }); });
-var idx = 0;
-function tryNext() {
-if (idx >= candidates.length) {
-cardEl.style.display = 'none';
-return;
-}
-var item = candidates[idx++];
-try {
-GM_xmlhttpRequest({
-method: 'GET',
-url: item.url,
-responseType: 'blob',
-timeout: 15000,
-onload: function(res) {
-if (res.status === 200 && res.response && res.response.size > 100) {
-savePreferredExt(animeId, item.ext);
-imgEl.src = saveThumbToCache(cacheKey, res.response);
-} else {
-tryNext();
-}
-},
-onerror: tryNext,
-ontimeout: tryNext
-});
-} catch (e) {
-tryNext();
-}
-}
-tryNext();
-});
-}
-function getMetaForEpisode(epMeta, parsed) {
-if (!epMeta) return {};
-return epMeta[parsed.code] ||
-epMeta[parsed.num] ||
-epMeta['e' + parsed.num] ||
-epMeta[parsed.seriesLabel] ||
-{};
-}
-function insertSectionBelowBanner(sectionEl) {
-var bannerHost = document.getElementById('cr-poster-host');
-if (bannerHost) {
-bannerHost.insertAdjacentElement('afterend', sectionEl);
-return;
-}
-var nav = document.querySelector('body > nav') || document.querySelector('nav');
-if (nav) nav.insertAdjacentElement('afterend', sectionEl);
-else document.body.prepend(sectionEl);
-}
-function showNeighborInfo(grid, sourceCard, data) {
-hideAllNeighborPanels(grid);
-var visibleCards = Array.from(grid.querySelectorAll('.cr-ep-card')).filter(function(c) {
-return c.style.display !== 'none';
-});
-var pos = visibleCards.indexOf(sourceCard);
-if (pos === -1 || visibleCards.length < 2) return;
-var targetCard = visibleCards[pos + 1];
-if (!targetCard || targetCard.offsetTop !== sourceCard.offsetTop) {
-targetCard = visibleCards[pos - 1];
-}
-if (!targetCard) return;
-var panel = targetCard.querySelector('.cr-ep-neighbor-panel');
-if (!panel) return;
-panel.innerHTML = '';
-var pNum = document.createElement('div');
-pNum.className = 'cr-ep-np-num';
-pNum.textContent = data.seriesLabel;
-panel.appendChild(pNum);
-var pTitle = document.createElement('div');
-pTitle.className = 'cr-ep-np-title';
-pTitle.textContent = data.title;
-panel.appendChild(pTitle);
-if (data.date) {
-var pDateRow = document.createElement('div');
-pDateRow.className = 'cr-ep-np-date-row';
-pDateRow.innerHTML =
-'' +
-'' + data.date + '';
-panel.appendChild(pDateRow);
-}
-if (data.desc) {
-var pDesc = document.createElement('div');
-pDesc.className = 'cr-ep-np-desc';
-pDesc.textContent = data.desc;
-panel.appendChild(pDesc);
-}
-panel.classList.add('is-visible');
-}
-function hideAllNeighborPanels(grid) {
-if (!grid) return;
-grid.querySelectorAll('.cr-ep-neighbor-panel.is-visible').forEach(function(p) {
-p.classList.remove('is-visible');
-});
-}
-function renderFranchiseEpisodes(animeId, folderPath) {
-var origEpCard = document.querySelector('.card-content.m-episode-list');
-if (!origEpCard) return;
-var links = Array.from(origEpCard.querySelectorAll('a.m-episode-item')).filter(function(a) {
-var h = a.getAttribute('href') || '';
-return h.indexOf('-' + animeId + '/') !== -1 || h.indexOf('/' + animeId + '/') !== -1;
-});
-if (!links.length) return;
-ensureFranchiseStyles();
-var existingSection = document.getElementById('cr-franchise-episodes-section');
-if (existingSection) existingSection.remove();
-var section = document.createElement('div');
-section.id = 'cr-franchise-episodes-section';
-section.setAttribute('data-anime-id', animeId);
-var header = document.createElement('div');
-header.className = 'cr-ep-section-header';
-header.textContent = 'Серии';
-section.appendChild(header);
-var grid = document.createElement('div');
-grid.className = 'cr-ep-grid';
-var cardRecords = [];
-links.forEach(function(a) {
-var href = a.getAttribute('href') || '#';
-var parsed = detectEpisodeInfo(a.textContent, href);
-if (!parsed) return;
-var cardData = {
-seriesLabel: parsed.seriesLabel,
-title: parsed.rawLabel,
-duration: '',
-date: '',
-desc: ''
-};
-var card = document.createElement('div');
-card.className = 'cr-ep-card' + (isEpisodeWatched(animeId, parsed.code) ? ' is-watched' : '');
-var mainLink = document.createElement('a');
-mainLink.className = 'cr-ep-main-link';
-mainLink.href = href;
-var thumbWrap = document.createElement('div');
-thumbWrap.className = 'cr-ep-thumb-wrap';
-var img = document.createElement('img');
-img.className = 'cr-ep-thumb';
-img.alt = cardData.title;
-thumbWrap.appendChild(img);
-var watchedBadge = document.createElement('div');
-watchedBadge.className = 'cr-ep-watched-badge';
-watchedBadge.textContent = 'Просмотрено';
-thumbWrap.appendChild(watchedBadge);
-var durEl = document.createElement('div');
-durEl.className = 'cr-ep-duration';
-durEl.style.display = 'none';
-thumbWrap.appendChild(durEl);
-var playBadge = document.createElement('div');
-playBadge.className = 'cr-ep-play-badge';
-playBadge.innerHTML = '';
-thumbWrap.appendChild(playBadge);
-var bottomBar = document.createElement('div');
-bottomBar.className = 'cr-ep-bottom-bar';
-var baseMeta = document.createElement('div');
-baseMeta.className = 'cr-ep-base-meta';
-var numEl = document.createElement('div');
-numEl.className = 'cr-ep-num';
-numEl.textContent = cardData.seriesLabel;
-var titleEl = document.createElement('div');
-titleEl.className = 'cr-ep-base-title';
-titleEl.textContent = cardData.title;
-baseMeta.appendChild(numEl);
-baseMeta.appendChild(titleEl);
-var menuAnchor = document.createElement('div');
-menuAnchor.className = 'cr-ep-menu-anchor';
-var dotsBtn = document.createElement('button');
-dotsBtn.type = 'button';
-dotsBtn.className = 'cr-ep-dots-btn';
-dotsBtn.innerHTML = '⋮';
-var popupMenu = document.createElement('div');
-popupMenu.className = 'cr-ep-popup-menu';
-var watchToggleItem = document.createElement('button');
-watchToggleItem.type = 'button';
-watchToggleItem.className = 'cr-ep-popup-item';
-watchToggleItem.textContent = isEpisodeWatched(animeId, parsed.code)
-? 'Убрать из просмотренного'
-: 'Добавить в просмотренное';
-var menuHideTimer = null;
-function closeMenu() {
-popupMenu.classList.remove('is-open');
-dotsBtn.classList.remove('is-active');
-}
-function scheduleMenuClose() {
-if (menuHideTimer) clearTimeout(menuHideTimer);
-menuHideTimer = setTimeout(closeMenu, 260);
-}
-function cancelMenuClose() {
-if (menuHideTimer) clearTimeout(menuHideTimer);
-}
-dotsBtn.addEventListener('click', function(e) {
-e.preventDefault();
-e.stopPropagation();
-cancelMenuClose();
-var willOpen = !popupMenu.classList.contains('is-open');
-document.querySelectorAll('.cr-ep-popup-menu.is-open').forEach(function(m) {
-m.classList.remove('is-open');
-});
-document.querySelectorAll('.cr-ep-dots-btn.is-active').forEach(function(b) {
-b.classList.remove('is-active');
-});
-if (willOpen) {
-popupMenu.classList.add('is-open');
-dotsBtn.classList.add('is-active');
-}
-});
-menuAnchor.addEventListener('mouseenter', cancelMenuClose);
-menuAnchor.addEventListener('mouseleave', scheduleMenuClose);
-popupMenu.addEventListener('mouseenter', cancelMenuClose);
-popupMenu.addEventListener('mouseleave', scheduleMenuClose);
-card.addEventListener('mouseleave', scheduleMenuClose);
-watchToggleItem.addEventListener('click', function(e) {
-e.preventDefault();
-e.stopPropagation();
-var nowWatched = toggleEpisodeWatched(animeId, parsed.code);
-card.classList.toggle('is-watched', nowWatched);
-watchToggleItem.textContent = nowWatched
-? 'Убрать из просмотренного'
-: 'Добавить в просмотренное';
-closeMenu();
-});
-popupMenu.appendChild(watchToggleItem);
-menuAnchor.appendChild(dotsBtn);
-menuAnchor.appendChild(popupMenu);
-mainLink.appendChild(thumbWrap);
-bottomBar.appendChild(baseMeta);
-bottomBar.appendChild(menuAnchor);
-var neighborPanel = document.createElement('div');
-neighborPanel.className = 'cr-ep-neighbor-panel';
-card.appendChild(mainLink);
-card.appendChild(bottomBar);
-card.appendChild(neighborPanel);
-var hoverTimer = null;
-card.addEventListener('mouseenter', function() {
-if (hoverTimer) clearTimeout(hoverTimer);
-hoverTimer = setTimeout(function() {
-showNeighborInfo(grid, card, cardData);
-}, 350);
-});
-card.addEventListener('mouseleave', function() {
-if (hoverTimer) clearTimeout(hoverTimer);
-hideAllNeighborPanels(grid);
-});
-grid.appendChild(card);
-loadAndCacheThumb(img, card, animeId, folderPath, parsed.code);
-cardRecords.push({
-parsed: parsed,
-cardData: cardData,
-titleEl: titleEl,
-durEl: durEl,
-imgEl: img
-});
-});
-if (!cardRecords.length) return;
-section.appendChild(grid);
-insertSectionBelowBanner(section);
-var parentCard = origEpCard.closest('.card');
-if (parentCard) parentCard.style.display = 'none';
-else origEpCard.style.display = 'none';
-loadEpisodesMetadata(animeId, folderPath).then(function(epMeta) {
-if (getAnimeId() !== animeId || !epMeta) return;
-cardRecords.forEach(function(rec) {
-var info = getMetaForEpisode(epMeta, rec.parsed);
-if (!info) return;
-if (info.title || info.name) {
-rec.cardData.title = info.title || info.name;
-rec.titleEl.textContent = rec.cardData.title;
-rec.imgEl.alt = rec.cardData.title;
-}
-if (info.duration || info.time) {
-rec.cardData.duration = formatDurationUpper(info.duration || info.time);
-rec.durEl.textContent = rec.cardData.duration;
-rec.durEl.style.display = 'block';
-}
-if (info.date || info.releaseDate || info.aired) {
-rec.cardData.date = info.date || info.releaseDate || info.aired;
-}
-if (info.desc || info.description) {
-rec.cardData.desc = info.desc || info.description;
-}
-});
-});
-}
-function syncFranchise() {
-var animeId = getAnimeId();
-var existingSection = document.getElementById('cr-franchise-episodes-section');
-if (!animeId) {
-if (existingSection) existingSection.remove();
-return;
-}
-if (existingSection && existingSection.getAttribute('data-anime-id') !== animeId) {
-existingSection.remove();
-existingSection = null;
-}
-if (existingSection && existingSection.getAttribute('data-anime-id') === animeId) {
-var bannerHost = document.getElementById('cr-poster-host');
+
+    function getMetaForEpisode(epMeta, parsed) {
+        if (!epMeta) return {};
+        return epMeta[parsed.code] ||
+               epMeta[parsed.num] ||
+               epMeta['e' + parsed.num] ||
+               epMeta[parsed.num + ' серия'] ||
+               epMeta[parsed.seriesLabel] ||
+               {};
+    }
+
+    function insertSectionBelowBanner(sectionEl) {
+        var bannerHost = document.getElementById('cr-poster-host');
+        if (bannerHost) {
+            bannerHost.insertAdjacentElement('afterend', sectionEl);
+            return;
+        }
+        var nav = document.querySelector('body > nav') || document.querySelector('nav');
+        if (nav) nav.insertAdjacentElement('afterend', sectionEl);
+        else document.body.prepend(sectionEl);
+    }
+
+    function hideAllNeighborPanels(grid) {
+        if (!grid) return;
+        grid.querySelectorAll('.cr-ep-neighbor-panel.is-visible').forEach(function(p) {
+            p.classList.remove('is-visible');
+        });
+        grid.querySelectorAll('.cr-ep-card.is-neighbor-covered').forEach(function(c) {
+            c.classList.remove('is-neighbor-covered');
+        });
+    }
+
+    function showNeighborInfo(grid, sourceCard, data) {
+        hideAllNeighborPanels(grid);
+        var visibleCards = Array.from(grid.querySelectorAll('.cr-ep-card')).filter(function(c) {
+            return c.style.display !== 'none';
+        });
+        var pos = visibleCards.indexOf(sourceCard);
+        if (pos === -1 || visibleCards.length < 2) return;
+
+        var targetCard = visibleCards.at(pos + 1);
+        if (!targetCard || targetCard.offsetTop !== sourceCard.offsetTop) {
+            targetCard = visibleCards.at(pos - 1);
+        }
+        if (!targetCard) return;
+
+        var panel = targetCard.querySelector('.cr-ep-neighbor-panel');
+        if (!panel) return;
+
+        panel.innerHTML = '';
+
+        var pNum = document.createElement('div');
+        pNum.className = 'cr-ep-np-num';
+        pNum.textContent = data.seriesLabel;
+        panel.appendChild(pNum);
+
+        var pTitle = document.createElement('div');
+        pTitle.className = 'cr-ep-np-title';
+        pTitle.textContent = data.title;
+        panel.appendChild(pTitle);
+
+        if (data.date) {
+            var pDate = document.createElement('div');
+            pDate.className = 'cr-ep-np-date';
+            pDate.textContent = data.date;
+            panel.appendChild(pDate);
+        }
+
+        if (data.desc) {
+            var pDesc = document.createElement('div');
+            pDesc.className = 'cr-ep-np-desc';
+            pDesc.textContent = data.desc;
+            panel.appendChild(pDesc);
+        }
+
+        targetCard.classList.add('is-neighbor-covered');
+        panel.classList.add('is-visible');
+    }
+        function renderFranchiseEpisodes(core, animeId, folderPath) {
+        var origEpCard = document.querySelector('.card-content.m-episode-list');
+        if (!origEpCard) return;
+
+        var links = Array.from(origEpCard.querySelectorAll('a.m-episode-item')).filter(function(a) {
+            var h = a.getAttribute('href') || '';
+            return h.indexOf('-' + animeId + '/') !== -1 || h.indexOf('/' + animeId + '/') !== -1;
+        });
+        if (!links.length) return;
+
+        ensureFranchiseStyles();
+
+        var existingSection = document.getElementById('cr-franchise-episodes-section');
+        if (existingSection) existingSection.remove();
+
+        var section = document.createElement('div');
+        section.id = 'cr-franchise-episodes-section';
+        section.setAttribute('data-anime-id', animeId);
+
+        var header = document.createElement('div');
+        header.className = 'cr-ep-section-header';
+        header.textContent = 'Серии';
+        section.appendChild(header);
+
+        var grid = document.createElement('div');
+        grid.className = 'cr-ep-grid';
+
+        var cardRecords = [];
+
+        links.forEach(function(a) {
+            var href = a.getAttribute('href') || '#';
+            var parsed = detectEpisodeInfo(a.textContent, href);
+            if (!parsed) return;
+
+            var cardData = {
+                seriesLabel: parsed.seriesLabel,
+                title: parsed.rawLabel,
+                duration: '',
+                date: '',
+                desc: ''
+            };
+
+            var card = document.createElement('div');
+            card.className = 'cr-ep-card' + (core.isEpisodeWatched(animeId, parsed.code) ? ' is-watched' : '');
+
+            var thumbLink = document.createElement('a');
+            thumbLink.className = 'cr-ep-thumb-link';
+            thumbLink.href = href;
+
+            var thumbWrap = document.createElement('div');
+            thumbWrap.className = 'cr-ep-thumb-wrap';
+
+            var img = document.createElement('img');
+            img.className = 'cr-ep-thumb';
+            img.alt = cardData.title;
+            thumbWrap.appendChild(img);
+
+            var watchedBadge = document.createElement('div');
+            watchedBadge.className = 'cr-ep-watched-badge';
+            watchedBadge.textContent = 'Просмотрено';
+            thumbWrap.appendChild(watchedBadge);
+
+            var durEl = document.createElement('div');
+            durEl.className = 'cr-ep-duration';
+            durEl.style.display = 'none';
+            thumbWrap.appendChild(durEl);
+
+            var playBadge = document.createElement('div');
+            playBadge.className = 'cr-ep-play-badge';
+            var playTri = document.createElement('div');
+            playTri.className = 'cr-ep-play-triangle';
+            playBadge.appendChild(playTri);
+            thumbWrap.appendChild(playBadge);
+
+            thumbLink.appendChild(thumbWrap);
+
+            var bottomBar = document.createElement('div');
+            bottomBar.className = 'cr-ep-bottom-bar';
+
+            var baseMeta = document.createElement('div');
+            baseMeta.className = 'cr-ep-base-meta';
+
+            var numEl = document.createElement('div');
+            numEl.className = 'cr-ep-num';
+            numEl.textContent = cardData.seriesLabel;
+
+            var titleLink = document.createElement('a');
+            titleLink.className = 'cr-ep-base-title-link';
+            titleLink.href = href;
+
+            var titleEl = document.createElement('div');
+            titleEl.className = 'cr-ep-base-title';
+            titleEl.textContent = cardData.title;
+
+            titleLink.appendChild(titleEl);
+            baseMeta.appendChild(numEl);
+            baseMeta.appendChild(titleLink);
+
+            var menuAnchor = document.createElement('div');
+            menuAnchor.className = 'cr-ep-menu-anchor';
+
+            var dotsBtn = document.createElement('button');
+            dotsBtn.type = 'button';
+            dotsBtn.className = 'cr-ep-dots-btn';
+            dotsBtn.innerHTML = '&#8942;';
+
+            var popupMenu = document.createElement('div');
+            popupMenu.className = 'cr-ep-popup-menu';
+
+            var watchToggleItem = document.createElement('button');
+            watchToggleItem.type = 'button';
+            watchToggleItem.className = 'cr-ep-popup-item';
+            watchToggleItem.textContent = core.isEpisodeWatched(animeId, parsed.code)
+                ? 'Убрать из просмотренного'
+                : 'Добавить в просмотренное';
+
+            var menuHideTimer = null;
+            function closeMenu() {
+                popupMenu.classList.remove('is-open');
+                dotsBtn.classList.remove('is-active');
+            }
+            function scheduleMenuClose() {
+                if (menuHideTimer) clearTimeout(menuHideTimer);
+                menuHideTimer = setTimeout(closeMenu, 260);
+            }
+            function cancelMenuClose() {
+                if (menuHideTimer) clearTimeout(menuHideTimer);
+            }
+
+            dotsBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                cancelMenuClose();
+                var willOpen = !popupMenu.classList.contains('is-open');
+                document.querySelectorAll('.cr-ep-popup-menu.is-open').forEach(function(m) {
+                    m.classList.remove('is-open');
+                });
+                document.querySelectorAll('.cr-ep-dots-btn.is-active').forEach(function(b) {
+                    b.classList.remove('is-active');
+                });
+                if (willOpen) {
+                    popupMenu.classList.add('is-open');
+                    dotsBtn.classList.add('is-active');
+                }
+            });
+
+            menuAnchor.addEventListener('mouseenter', cancelMenuClose);
+            menuAnchor.addEventListener('mouseleave', scheduleMenuClose);
+            popupMenu.addEventListener('mouseenter', cancelMenuClose);
+            popupMenu.addEventListener('mouseleave', scheduleMenuClose);
+            card.addEventListener('mouseleave', scheduleMenuClose);
+
+            watchToggleItem.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var nowWatched = core.toggleEpisodeWatched(animeId, parsed.code);
+                card.classList.toggle('is-watched', nowWatched);
+                watchToggleItem.textContent = nowWatched
+                    ? 'Убрать из просмотренного'
+                    : 'Добавить в просмотренное';
+                closeMenu();
+            });
+
+            popupMenu.appendChild(watchToggleItem);
+            menuAnchor.appendChild(dotsBtn);
+            menuAnchor.appendChild(popupMenu);
+
+            bottomBar.appendChild(baseMeta);
+            bottomBar.appendChild(menuAnchor);
+
+            var neighborPanel = document.createElement('div');
+            neighborPanel.className = 'cr-ep-neighbor-panel';
+
+            card.appendChild(thumbLink);
+            card.appendChild(bottomBar);
+            card.appendChild(neighborPanel);
+
+            thumbWrap.addEventListener('mouseenter', function() {
+                card.classList.add('is-thumb-hovered');
+                showNeighborInfo(grid, card, cardData);
+            });
+            thumbWrap.addEventListener('mouseleave', function() {
+                card.classList.remove('is-thumb-hovered');
+                hideAllNeighborPanels(grid);
+            });
+
+            grid.appendChild(card);
+            core.loadAndCacheThumb(img, card, animeId, folderPath, parsed.code);
+
+            cardRecords.push({
+                parsed: parsed,
+                cardData: cardData,
+                titleEl: titleEl,
+                durEl: durEl,
+                imgEl: img
+            });
+        });
+
+        if (!cardRecords.length) return;
+
+        section.appendChild(grid);
+        insertSectionBelowBanner(section);
+
+        var parentCard = origEpCard.closest('.card');
+        if (parentCard) parentCard.style.display = 'none';
+        else origEpCard.style.display = 'none';
+
+        core.loadEpisodesMetadata(animeId, folderPath).then(function(epMeta) {
+            if (core.getAnimeId() !== animeId || !epMeta) return;
+            cardRecords.forEach(function(rec) {
+                var info = getMetaForEpisode(epMeta, rec.parsed);
+                if (!info) return;
+                if (info.title || info.name) {
+                    rec.cardData.title = info.title || info.name;
+                    rec.titleEl.textContent = rec.cardData.title;
+                    rec.imgEl.alt = rec.cardData.title;
+                }
+                if (info.duration || info.time) {
+                    rec.cardData.duration = info.duration || info.time;
+                    renderDurationBadge(rec.durEl, rec.cardData.duration);
+                }
+                if (info.date || info.releaseDate || info.aired) {
+                    rec.cardData.date = info.date || info.releaseDate || info.aired;
+                }
+                if (info.desc || info.description) {
+                    rec.cardData.desc = info.desc || info.description;
+                }
+            });
+        });
+    }
+
+    function syncFranchiseUI() {
+        var targetWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        var core = targetWin.CRFranchiseCore;
+        if (!core) return;
+
+        var animeId = core.getAnimeId();
+        var existingSection = document.getElementById('cr-franchise-episodes-section');
+
+        if (!animeId) {
+            if (existingSection) existingSection.remove();
+            return;
+        }
+
+        if (existingSection && existingSection.getAttribute('data-anime-id') !== animeId) {
+            existingSection.remove();
+            existingSection = null;
+        }
+
+        if (existingSection && existingSection.getAttribute('data-anime-id') === animeId) {
+            var bannerHost = document.getElementById('cr-poster-host');
 if (bannerHost && bannerHost.nextElementSibling !== existingSection) {
 bannerHost.insertAdjacentElement('afterend', existingSection);
 }
@@ -2148,12 +2360,19 @@ return h.indexOf('-' + animeId + '/') !== -1 || h.indexOf('/' + animeId + '/') !
 });
 if (!hasMatchingLinks) return;
 var myGen = ++renderGen;
-findTitleFolder(animeId).then(function(folderPath) {
-if (myGen !== renderGen || getAnimeId() !== animeId) return;
+core.findTitleFolder(animeId).then(function(folderPath) {
+if (myGen !== renderGen || core.getAnimeId() !== animeId) return;
 if (!folderPath) return;
-renderFranchiseEpisodes(animeId, folderPath);
+renderFranchiseEpisodes(core, animeId, folderPath);
 });
 }
-window.addEventListener('popstate', syncFranchise);
-setInterval(syncFranchise, 400);
+window.addEventListener('cr-reset-page-cache', function() {
+renderGen++;
+var oldBlock = document.getElementById('cr-franchise-episodes-section');
+if (oldBlock) oldBlock.remove();
+});
+window.addEventListener('popstate', syncFranchiseUI);
+setInterval(syncFranchiseUI, 400);
 })();
+
+
