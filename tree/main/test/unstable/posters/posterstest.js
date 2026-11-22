@@ -2375,4 +2375,1657 @@ window.addEventListener('popstate', syncFranchiseUI);
 setInterval(syncFranchiseUI, 400);
 })();
 
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Franchise Trailer
+// @namespace    http://tampermonkey.net
+// @version      1.0
+// @description  Отдельный модуль вкладок «Трейлер» и «Серии» для тайтлов франшиз с автоизвлечением iframe-плеера
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// ==/UserScript==
 
+(function() {
+    'use strict';
+
+    var embedUrlCache = {};
+    var pendingRequests = {};
+
+    function getAnimeId() {
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var segments = path.split('/').filter(Boolean);
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
+        var dashIdx = slug.lastIndexOf('-');
+        if (dashIdx === -1) return null;
+        var id = slug.slice(dashIdx + 1);
+        return /^\d+$/.test(id) ? id : null;
+    }
+
+    function findTrailerLinkOnPage(animeId) {
+        var origEpCard = document.querySelector('.card-content.m-episode-list');
+        if (!origEpCard) return null;
+
+        var links = Array.from(origEpCard.querySelectorAll('a.m-episode-item'));
+        for (var i = 0; i < links.length; i++) {
+            var a = links.at(i);
+            var href = a.getAttribute('href') || '';
+            var text = (a.textContent || '').replace(/play_circle_filled/gi, '').trim();
+            var belongsToTitle = href.indexOf('-' + animeId + '/') !== -1 || href.indexOf('/' + animeId + '/') !== -1;
+            if (!belongsToTitle) continue;
+
+            if (/treyler/i.test(href) || /трейлер|trailer/i.test(text)) {
+                return new URL(href, window.location.origin).href;
+            }
+        }
+        return null;
+    }
+
+    function parseEmbedSrcFromHtml(html) {
+        if (!html) return null;
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+
+        // 1. Ищем блок после ссылки <a class="m-embed-code-link">HTML-код для вставки на сайт</a>
+        var embedLink = doc.querySelector('a.m-embed-code-link');
+        if (embedLink && embedLink.nextElementSibling) {
+            var nextEl = embedLink.nextElementSibling;
+            var rawCode = nextEl.value || nextEl.textContent || nextEl.innerHTML || '';
+            var srcMatch = rawCode.match(/src\s*=\s*["']([^"']*\/translations\/embed\/\d+[^"']*)["']/i);
+            if (srcMatch) return srcMatch.at(1);
+        }
+
+        // 2. Ищем напрямую <iframe src=".../translations/embed/...">
+        var directIframe = doc.querySelector('iframe[src*="/translations/embed/"]');
+        if (directIframe) {
+            return directIframe.getAttribute('src');
+        }
+
+        // 3. Резервный поиск ID озвучки по регулярному выражению в исходном коде страницы
+        var fallbackMatch = html.match(/https?:\/\/[^"'\s<>]+\/translations\/embed\/\d+/i) ||
+                            html.match(/\/translations\/embed\/\d+/i);
+        if (fallbackMatch) {
+            var found = fallbackMatch.at(0);
+            return found.charAt(0) === '/' ? (window.location.origin + found) : found;
+        }
+
+        return null;
+    }
+    function fetchTrailerEmbedUrl(animeId, trailerPageUrl) {
+        var storageKey = 'cr_trailer_embed_' + animeId;
+        if (embedUrlCache[animeId]) {
+            return Promise.resolve(embedUrlCache[animeId]);
+        }
+
+        try {
+            var saved = sessionStorage.getItem(storageKey);
+            if (saved) {
+                embedUrlCache[animeId] = saved;
+                return Promise.resolve(saved);
+            }
+        } catch (e) {}
+
+        if (pendingRequests[animeId]) {
+            return pendingRequests[animeId];
+        }
+
+        pendingRequests[animeId] = fetch(trailerPageUrl, {
+            method: 'GET',
+            credentials: 'same-origin'
+        }).then(function(res) {
+            if (!res.ok) return '';
+            return res.text();
+        }).then(function(html) {
+            var embedSrc = parseEmbedSrcFromHtml(html);
+            if (embedSrc) return embedSrc;
+
+            // Если страница серии трейлера содержит ссылку на конкретную озвучку (/ozvuchka-XXXX), переходим по ней
+            if (html) {
+                var doc = new DOMParser().parseFromString(html, 'text/html');
+                var voiceLink = doc.querySelector('a[href*="/ozvuchka-"]');
+                if (voiceLink) {
+                    var voiceUrl = new URL(voiceLink.getAttribute('href'), window.location.origin).href;
+                    return fetch(voiceUrl, {
+                        method: 'GET',
+                        credentials: 'same-origin'
+                    }).then(function(r2) {
+                        return r2.ok ? r2.text() : '';
+                    }).then(function(html2) {
+                        return parseEmbedSrcFromHtml(html2);
+                    });
+                }
+            }
+            return null;
+        }).then(function(finalSrc) {
+            delete pendingRequests[animeId];
+            if (finalSrc) {
+                embedUrlCache[animeId] = finalSrc;
+                try { sessionStorage.setItem(storageKey, finalSrc); } catch (e) {}
+            }
+            return finalSrc || null;
+        }).catch(function() {
+            delete pendingRequests[animeId];
+            return null;
+        });
+
+        return pendingRequests[animeId];
+    }
+
+    function ensureTrailerTabStyles() {
+        if (document.getElementById('cr-franchise-trailer-style')) return;
+        var st = document.createElement('style');
+        st.id = 'cr-franchise-trailer-style';
+        st.textContent =
+            '.cr-ep-tabs-bar {' +
+            '  display: flex !important; align-items: center !important; gap: 28px !important;' +
+            '  border-bottom: 2px solid rgba(255, 255, 255, 0.14) !important;' +
+            '  margin-bottom: 22px !important; padding: 0 !important;' +
+            '}' +
+            '.cr-ep-tab-btn, .cr-ep-tab-btn:focus, .cr-ep-tab-btn:active {' +
+            '  position: relative !important; background: transparent !important; background-color: transparent !important;' +
+            '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
+            '  padding: 0 2px 12px 2px !important; margin: 0 0 -2px 0 !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important; font-size: 16px !important; font-weight: 700 !important;' +
+            '  letter-spacing: 0.6px !important; text-transform: uppercase !important;' +
+            '  color: #a0a0a0 !important; cursor: pointer !important;' +
+            '  border-bottom: 3px solid transparent !important;' +
+            '  transition: color 0.16s ease, border-color 0.16s ease !important;' +
+            '}' +
+            '.cr-ep-tab-btn:hover {' +
+            '  background: transparent !important; background-color: transparent !important;' +
+            '  color: #ffffff !important;' +
+            '}' +
+            '.cr-ep-tab-btn.is-active, .cr-ep-tab-btn.is-active:hover {' +
+            '  background: transparent !important; background-color: transparent !important;' +
+            '  color: #ffffff !important;' +
+            '  border-bottom: 3px solid #f47521 !important;' +
+            '}' +
+            '.cr-ep-trailer-pane {' +
+            '  display: block !important; width: 100% !important; background: #000000 !important;' +
+            '}' +
+            '.cr-ep-trailer-frame-wrap {' +
+            '  position: relative !important; width: 100% !important; max-width: 960px !important;' +
+            '  aspect-ratio: 16 / 9 !important; background: #0d0e12 !important; overflow: hidden !important;' +
+            '}' +
+            '.cr-ep-trailer-iframe {' +
+            '  position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important;' +
+            '  border: none !important; display: block !important; background: #000000 !important;' +
+            '}' +
+            '.cr-ep-trailer-status {' +
+            '  padding: 28px 16px !important; font-size: 14px !important; color: #a0a0a0 !important;' +
+            '}';
+        document.head.appendChild(st);
+    }
+    function mountTrailerTabsIntoSection(sectionEl, animeId, trailerPageUrl) {
+        if (!sectionEl || sectionEl.getAttribute('data-cr-trailer-mounted') === 'true') return;
+
+        var headerEl = sectionEl.querySelector('.cr-ep-section-header');
+        var gridEl = sectionEl.querySelector('.cr-ep-grid');
+        if (!headerEl || !gridEl) return;
+
+        ensureTrailerTabStyles();
+        sectionEl.setAttribute('data-cr-trailer-mounted', 'true');
+
+        // Создаём панель вкладок как в браузере: первая активная — «Трейлер», вторая — «Серии»
+        var tabsBar = document.createElement('div');
+        tabsBar.className = 'cr-ep-tabs-bar';
+
+        var tabTrailer = document.createElement('button');
+        tabTrailer.type = 'button';
+        tabTrailer.className = 'cr-ep-tab-btn is-active';
+        tabTrailer.textContent = 'Трейлер';
+
+        var tabEpisodes = document.createElement('button');
+        tabEpisodes.type = 'button';
+        tabEpisodes.className = 'cr-ep-tab-btn';
+        tabEpisodes.textContent = 'Серии';
+
+        tabsBar.appendChild(tabTrailer);
+        tabsBar.appendChild(tabEpisodes);
+
+        // Контейнер для окна трейлера
+        var trailerPane = document.createElement('div');
+        trailerPane.className = 'cr-ep-trailer-pane';
+
+        var frameWrap = document.createElement('div');
+        frameWrap.className = 'cr-ep-trailer-frame-wrap';
+
+        var statusBox = document.createElement('div');
+        statusBox.className = 'cr-ep-trailer-status';
+        statusBox.textContent = 'Загрузка плеера трейлера...';
+        frameWrap.appendChild(statusBox);
+        trailerPane.appendChild(frameWrap);
+
+        // Заменяем обычный заголовок «Серии» на панель вкладок и вставляем вкладку трейлера первой
+        headerEl.replaceWith(tabsBar);
+        gridEl.insertAdjacentElement('beforebegin', trailerPane);
+
+        // По умолчанию активна вкладка «Трейлер», поэтому сетка серий скрыта до переключения
+        gridEl.style.setProperty('display', 'none', 'important');
+
+        var loadedIframeSrc = null;
+
+        function activateTab(tabName) {
+            if (tabName === 'trailer') {
+                tabTrailer.classList.add('is-active');
+                tabEpisodes.classList.remove('is-active');
+                trailerPane.style.setProperty('display', 'block', 'important');
+                gridEl.style.setProperty('display', 'none', 'important');
+
+                var existingIframe = frameWrap.querySelector('iframe');
+                if (!existingIframe && loadedIframeSrc) {
+                    var ifr = document.createElement('iframe');
+                    ifr.className = 'cr-ep-trailer-iframe';
+                    ifr.src = loadedIframeSrc;
+                    ifr.setAttribute('allowfullscreen', '');
+                    ifr.setAttribute('frameborder', '0');
+                    frameWrap.innerHTML = '';
+                    frameWrap.appendChild(ifr);
+                }
+            } else {
+                tabEpisodes.classList.add('is-active');
+                tabTrailer.classList.remove('is-active');
+                trailerPane.style.setProperty('display', 'none', 'important');
+                gridEl.style.removeProperty('display');
+
+                // Выгружаем iframe при уходе на вкладку «Серии», чтобы не шёл фоновый звук
+                var activeIframe = frameWrap.querySelector('iframe');
+                if (activeIframe) {
+                    activeIframe.remove();
+                }
+            }
+        }
+
+        tabTrailer.addEventListener('click', function(e) {
+            e.preventDefault();
+            activateTab('trailer');
+        });
+
+        tabEpisodes.addEventListener('click', function(e) {
+            e.preventDefault();
+            activateTab('episodes');
+        });
+
+        // Загружаем HTML-код вставки трейлера со страницы озвучки трейлера
+        fetchTrailerEmbedUrl(animeId, trailerPageUrl).then(function(embedSrc) {
+            if (getAnimeId() !== animeId) return;
+            if (!embedSrc) {
+                statusBox.textContent = 'Не удалось получить код плеера трейлера.';
+                return;
+            }
+            loadedIframeSrc = embedSrc;
+            if (tabTrailer.classList.contains('is-active')) {
+                var ifr = document.createElement('iframe');
+                ifr.className = 'cr-ep-trailer-iframe';
+                ifr.src = embedSrc;
+                ifr.setAttribute('allowfullscreen', '');
+                ifr.setAttribute('frameborder', '0');
+                frameWrap.innerHTML = '';
+                frameWrap.appendChild(ifr);
+            }
+        });
+    }
+
+    function syncFranchiseTrailer() {
+        var animeId = getAnimeId();
+        if (!animeId) return;
+
+        var sectionEl = document.getElementById('cr-franchise-episodes-section');
+        if (!sectionEl || sectionEl.getAttribute('data-anime-id') !== animeId) return;
+        if (sectionEl.getAttribute('data-cr-trailer-mounted') === 'true') return;
+
+        var trailerUrl = findTrailerLinkOnPage(animeId);
+        if (!trailerUrl) return;
+
+        mountTrailerTabsIntoSection(sectionEl, animeId, trailerUrl);
+    }
+
+    window.addEventListener('cr-reset-page-cache', function(e) {
+        var resetId = e && e.detail && e.detail.animeId;
+        if (resetId) {
+            delete embedUrlCache[resetId];
+            try { sessionStorage.removeItem('cr_trailer_embed_' + resetId); } catch (err) {}
+        }
+    });
+
+    window.addEventListener('popstate', syncFranchiseTrailer);
+    setInterval(syncFranchiseTrailer, 400);
+})();
+
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Franchise Cleaner
+// @namespace    http://tampermonkey.net
+// @version      1.3
+// @description  Скрывает все дублирующиеся блоки (жанры, Начать просмотр, Добавить перевод, В вашем списке, Telegram, порядок просмотра), оставляя #comments и .footer-copyright
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var HIDE_ATTR = 'data-cr-cleaner-hidden';
+    var STYLE_ID = 'cr-franchise-cleaner-style';
+
+    function getAnimeId() {
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var segments = path.split('/').filter(Boolean);
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
+        var dashIdx = slug.lastIndexOf('-');
+        if (dashIdx === -1) return null;
+        var id = slug.slice(dashIdx + 1);
+        return /^\d+$/.test(id) ? id : null;
+    }
+
+    function ensureCleanerStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+        var st = document.createElement('style');
+        st.id = STYLE_ID;
+        st.textContent =
+            '[' + HIDE_ATTR + '="1"] {' +
+            '  display: none !important;' +
+            '  visibility: hidden !important;' +
+            '  height: 0 !important;' +
+            '  min-height: 0 !important;' +
+            '  margin: 0 !important;' +
+            '  padding: 0 !important;' +
+            '  border: none !important;' +
+            '  overflow: hidden !important;' +
+            '}' +
+            'footer.page-footer.m-footer-genres {' +
+            '  padding-top: 0 !important;' +
+            '  background: transparent !important;' +
+            '}';
+        document.head.appendChild(st);
+    }
+
+    function isPageEligible(animeId) {
+        if (!animeId) return false;
+
+        var posterHost = document.getElementById('cr-poster-host');
+        if (!posterHost || posterHost.getAttribute('data-anime-id') !== animeId) return false;
+        if (posterHost.shadowRoot) {
+            var canvas = posterHost.shadowRoot.querySelector('.bg-canvas');
+            if (canvas && canvas.getAttribute('data-loaded') !== 'true') return false;
+        }
+
+        var franchiseSection = document.getElementById('cr-franchise-episodes-section');
+        if (!franchiseSection || franchiseSection.getAttribute('data-anime-id') !== animeId) return false;
+
+        return true;
+    }
+
+    function markHidden(el) {
+        if (!el || el.nodeType !== 1) return;
+        if (el.id === 'cr-poster-host' ||
+            el.id === 'cr-franchise-episodes-section' ||
+            el.id === 'comments' ||
+            el.id === 'cr-share-modal-overlay' ||
+            el.id === 'cr-hero-list-popover') return;
+        if (el.classList.contains('footer-copyright')) return;
+        if (el.closest('#cr-poster-host') ||
+            el.closest('#cr-franchise-episodes-section') ||
+            el.closest('#comments') ||
+            el.closest('.footer-copyright') ||
+            el.closest('#cr-share-modal-overlay') ||
+            el.closest('#cr-hero-list-popover')) return;
+
+        if (el.getAttribute(HIDE_ATTR) !== '1') {
+            el.setAttribute(HIDE_ATTR, '1');
+        }
+    }
+
+    function restoreAllHidden() {
+        document.querySelectorAll('[' + HIDE_ATTR + '="1"]').forEach(function(el) {
+            el.removeAttribute(HIDE_ATTR);
+        });
+    }
+        function hideElementWithEmptyParentCard(el) {
+        if (!el) return;
+        markHidden(el);
+
+        var cardContent = el.closest('.card-content');
+        if (cardContent) {
+            var visibleChildren = Array.from(cardContent.children).filter(function(ch) {
+                return ch.getAttribute(HIDE_ATTR) !== '1' && ch.tagName !== 'SCRIPT' && ch.tagName !== 'STYLE';
+            });
+            if (visibleChildren.length === 0) {
+                markHidden(cardContent);
+            }
+        }
+
+        var card = el.closest('.card');
+        if (card) {
+            var visibleCardBlocks = Array.from(card.children).filter(function(ch) {
+                return ch.getAttribute(HIDE_ATTR) !== '1' && ch.tagName !== 'SCRIPT' && ch.tagName !== 'STYLE';
+            });
+            if (visibleCardBlocks.length === 0) {
+                markHidden(card);
+            }
+        }
+    }
+
+    function cleanCatalogBlocks() {
+        ensureCleanerStyles();
+
+        // 1. В футере жанров скрываем только список жанров (.container), оставляя .footer-copyright
+        document.querySelectorAll('footer.page-footer.m-footer-genres > .container, .m-footer-genres > .container').forEach(function(footerGenresContainer) {
+            if (!footerGenresContainer.classList.contains('footer-copyright')) {
+                markHidden(footerGenresContainer);
+            }
+        });
+
+        // 2. Блок жанров тайтла (.m-genres-list) вместе с родительским блоком
+        document.querySelectorAll('.m-genres-list').forEach(function(genresList) {
+            var parentBlock = genresList.closest('.card') || genresList.closest('.card-content') || genresList.parentElement;
+            if (parentBlock && parentBlock.tagName !== 'BODY' && parentBlock.tagName !== 'MAIN' && !parentBlock.querySelector('#comments')) {
+                hideElementWithEmptyParentCard(parentBlock);
+            } else {
+                hideElementWithEmptyParentCard(genresList);
+            }
+        });
+
+        // 3. Большая кнопка «Начать просмотр» (.m-black-box-button) вместе со всем блоком
+        document.querySelectorAll('.m-black-box-button').forEach(function(blackBtn) {
+            var btnBlock = blackBtn.closest('.card') || blackBtn.closest('.card-content') || blackBtn.parentElement;
+            if (btnBlock && btnBlock.tagName !== 'BODY' && btnBlock.tagName !== 'MAIN') {
+                hideElementWithEmptyParentCard(btnBlock);
+            } else {
+                hideElementWithEmptyParentCard(blackBtn);
+            }
+        });
+
+        // 4. Кнопка «Добавить перевод» (перенесена на флажок в постере)
+        document.querySelectorAll('a[href*="/translations/create"]').forEach(function(addTransLink) {
+            var transBlock = addTransLink.closest('.card') || addTransLink.closest('.card-content') || addTransLink.parentElement;
+            if (transBlock && transBlock.tagName !== 'BODY' && transBlock.tagName !== 'MAIN') {
+                hideElementWithEmptyParentCard(transBlock);
+            } else {
+                hideElementWithEmptyParentCard(addTransLink);
+            }
+        });
+
+        // 5. Кнопка «Добавить в список» (button[name="yt1"]) и встроенная панель «В вашем списке:»
+        document.querySelectorAll('button[name="yt1"]').forEach(function(addListBtn) {
+            var listBlock = addListBtn.closest('form') || addListBtn.closest('.card') || addListBtn.closest('.card-content') || addListBtn.parentElement;
+            if (listBlock && listBlock.tagName !== 'BODY' && listBlock.tagName !== 'MAIN') {
+                hideElementWithEmptyParentCard(listBlock);
+            } else {
+                hideElementWithEmptyParentCard(addListBtn);
+            }
+        });
+
+        var statusSelect = document.getElementById('UsersRates_status');
+        if (statusSelect && !statusSelect.closest('#cr-hero-list-popover')) {
+            var listFormBlock = statusSelect.closest('.card') || statusSelect.closest('.card-content') || statusSelect.parentElement.parentElement.parentElement;
+            if (listFormBlock && listFormBlock.tagName !== 'BODY' && listFormBlock.tagName !== 'MAIN') {
+                hideElementWithEmptyParentCard(listFormBlock);
+            }
+        }
+
+        // 6. Блок «Наш Telegram» и кнопки поделиться (.m-translation-view__share, .ya-share2)
+        document.querySelectorAll('.m-translation-view__share, .ya-share2').forEach(function(shareEl) {
+            var shareBlock = shareEl.closest('.card') || shareEl.closest('.card-content') || shareEl;
+            if (shareBlock && shareBlock.tagName !== 'BODY' && shareBlock.tagName !== 'MAIN') {
+                hideElementWithEmptyParentCard(shareBlock);
+            } else {
+                hideElementWithEmptyParentCard(shareEl);
+            }
+        });
+
+        // 7. Блок «Порядок просмотра:» (перенесён во вкладку «Хронология»)
+        document.querySelectorAll('.card-content h3').forEach(function(h3) {
+            if (h3.closest('#cr-franchise-episodes-section')) return;
+            if (/порядок\s+просмотра/i.test(h3.textContent || '')) {
+                var cardContent = h3.closest('.card-content');
+                if (cardContent) {
+                    hideElementWithEmptyParentCard(cardContent);
+                } else {
+                    hideElementWithEmptyParentCard(h3);
+                }
+            }
+        });
+
+        // 8. <h1 class="h3">Смотреть аниме ... онлайн</h1> вместе с блоком
+        document.querySelectorAll('h1.h3').forEach(function(h1) {
+            if (/смотреть\s+аниме/i.test(h1.textContent || '')) {
+                var wrapper = h1.closest('.card') || h1.closest('.card-content') || h1.parentElement;
+                if (wrapper && wrapper.tagName !== 'BODY' && wrapper.tagName !== 'MAIN') {
+                    markHidden(wrapper);
+                } else {
+                    markHidden(h1);
+                }
+            }
+        });
+
+        // 9. Родные заголовки названия аниме (h2.line-1, h2.line-2)
+        document.querySelectorAll('.card .card-content h2.line-1, .card .card-content h2.line-2').forEach(function(h2) {
+            hideElementWithEmptyParentCard(h2);
+        });
+
+        // 10. Описание и альтернативное описание
+        document.querySelectorAll('.m-catalog-item-description, .m-description, [class*="description"]').forEach(function(descEl) {
+            if (descEl.closest('#comments')) return;
+            var container = descEl.closest('.m-catalog-item-description') || descEl;
+            hideElementWithEmptyParentCard(container);
+        });
+
+        // 11. Альтернативное описание / Другие названия / Студия / Поделиться аниме
+        document.querySelectorAll('.card-content p, .card-content div, .card-content ul, .card-content dl, .card-content tr, .card-content li').forEach(function(node) {
+            if (node.closest('#cr-poster-host') ||
+                node.closest('#cr-franchise-episodes-section') ||
+                node.closest('#comments') ||
+                node.closest('#cr-hero-list-popover')) return;
+            var txt = (node.textContent || '').trim();
+            if (!txt) return;
+
+            if (/^альтернативное\s+описание/i.test(txt)) {
+                hideElementWithEmptyParentCard(node);
+                if (node.nextElementSibling && node.nextElementSibling.tagName === 'P') {
+                    hideElementWithEmptyParentCard(node.nextElementSibling);
+                }
+            }
+
+            if (/^другие\s+названия/i.test(txt) && txt.length < 600) {
+                hideElementWithEmptyParentCard(node);
+                if (node.nextElementSibling && (node.nextElementSibling.tagName === 'UL' || node.nextElementSibling.tagName === 'P' || node.nextElementSibling.tagName === 'DIV')) {
+                    hideElementWithEmptyParentCard(node.nextElementSibling);
+                }
+            }
+
+            if (/^студия\s*:/i.test(txt) && txt.length < 250) {
+                hideElementWithEmptyParentCard(node);
+            }
+
+            if (/^поделиться\s+аниме/i.test(txt) && txt.length < 120) {
+                hideElementWithEmptyParentCard(node);
+            }
+        });
+
+        document.querySelectorAll('.card-content a[href*="/studios/"]').forEach(function(stLink) {
+            var row = stLink.closest('tr') || stLink.closest('p') || stLink.closest('li') || stLink.closest('div');
+            if (row && !row.classList.contains('card-content')) {
+                hideElementWithEmptyParentCard(row);
+            } else {
+                hideElementWithEmptyParentCard(stLink);
+            }
+        });
+    }
+    function syncFranchiseCleaner() {
+        var animeId = getAnimeId();
+        if (!isPageEligible(animeId)) {
+            restoreAllHidden();
+            return;
+        }
+        cleanCatalogBlocks();
+    }
+
+    window.addEventListener('popstate', function() {
+        restoreAllHidden();
+        setTimeout(syncFranchiseCleaner, 500);
+    });
+
+    window.addEventListener('cr-reset-page-cache', function() {
+        restoreAllHidden();
+    });
+
+    setInterval(syncFranchiseCleaner, 450);
+})();
+
+
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Franchise Chronology
+// @namespace    http://tampermonkey.net
+// @version      1.0
+// @description  Переносит «Порядок просмотра» во вкладку «Хронология» сразу за вкладкой «Серии»
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    function getAnimeId() {
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var segments = path.split('/').filter(Boolean);
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
+        var dashIdx = slug.lastIndexOf('-');
+        if (dashIdx === -1) return null;
+        var id = slug.slice(dashIdx + 1);
+        return /^\d+$/.test(id) ? id : null;
+    }
+
+    function findWatchOrderBlock() {
+        var headers = Array.from(document.querySelectorAll('.card-content h3'));
+        for (var i = 0; i < headers.length; i++) {
+            var h3 = headers.at(i);
+            if (h3.closest('#cr-franchise-episodes-section')) continue;
+            if (/порядок\s+просмотра/i.test(h3.textContent || '')) {
+                return h3.closest('.card-content') || h3.parentElement;
+            }
+        }
+        return null;
+    }
+
+    function ensureChronologyStyles() {
+        if (document.getElementById('cr-franchise-chronology-style')) return;
+        var st = document.createElement('style');
+        st.id = 'cr-franchise-chronology-style';
+        st.textContent =
+            '.cr-ep-tabs-bar {' +
+            '  display: flex !important; align-items: center !important; gap: 28px !important;' +
+            '  border-bottom: 2px solid rgba(255, 255, 255, 0.14) !important;' +
+            '  margin-bottom: 22px !important; padding: 0 !important;' +
+            '}' +
+            '.cr-ep-tab-btn, .cr-ep-tab-btn:focus, .cr-ep-tab-btn:active {' +
+            '  position: relative !important; background: transparent !important; background-color: transparent !important;' +
+            '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
+            '  padding: 0 2px 12px 2px !important; margin: 0 0 -2px 0 !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important; font-size: 16px !important; font-weight: 700 !important;' +
+            '  letter-spacing: 0.6px !important; text-transform: uppercase !important;' +
+            '  color: #a0a0a0 !important; cursor: pointer !important;' +
+            '  border-bottom: 3px solid transparent !important;' +
+            '  transition: color 0.16s ease, border-color 0.16s ease !important;' +
+            '}' +
+            '.cr-ep-tab-btn:hover {' +
+            '  background: transparent !important; background-color: transparent !important;' +
+            '  color: #ffffff !important;' +
+            '}' +
+            '.cr-ep-tab-btn.is-active, .cr-ep-tab-btn.is-active:hover {' +
+            '  background: transparent !important; background-color: transparent !important;' +
+            '  color: #ffffff !important;' +
+            '  border-bottom: 3px solid #f47521 !important;' +
+            '}' +
+            '.cr-ep-chronology-pane {' +
+            '  display: none; width: 100% !important; color: #e2e2e2 !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important;' +
+            '}' +
+            '.cr-ep-chronology-pane h3 {' +
+            '  font-size: 18px !important; font-weight: 700 !important; color: #ffffff !important;' +
+            '  margin: 0 0 14px 0 !important; padding: 0 !important;' +
+            '}' +
+            '.cr-ep-chronology-pane ul {' +
+            '  list-style-type: disc !important; padding-left: 22px !important; margin: 6px 0 !important;' +
+            '}' +
+            '.cr-ep-chronology-pane li.m-connections-list__item {' +
+            '  font-size: 15px !important; line-height: 1.7 !important; color: #d0d0d0 !important; margin: 4px 0 !important;' +
+            '}' +
+            '.cr-ep-chronology-pane li.m-connections-list__item_current > a {' +
+            '  color: #f47521 !important; font-weight: 700 !important;' +
+            '}' +
+            '.cr-ep-chronology-pane a {' +
+            '  color: #ffffff !important; text-decoration: none !important; transition: color 0.15s ease !important;' +
+            '}' +
+            '.cr-ep-chronology-pane a:hover {' +
+            '  color: #f47521 !important; text-decoration: underline !important;' +
+            '}' +
+            '.cr-ep-chronology-pane .m-connections-list__type, .cr-ep-chronology-pane .m-connections-list__year {' +
+            '  color: #9e9e9e !important;' +
+            '}';
+        document.head.appendChild(st);
+    }
+    function ensureTabsBarExists(sectionEl) {
+        var existingBar = sectionEl.querySelector('.cr-ep-tabs-bar');
+        var gridEl = sectionEl.querySelector('.cr-ep-grid');
+        if (!gridEl) return null;
+
+        if (existingBar) {
+            return existingBar;
+        }
+
+        var headerEl = sectionEl.querySelector('.cr-ep-section-header');
+        var tabsBar = document.createElement('div');
+        tabsBar.className = 'cr-ep-tabs-bar';
+
+        var tabEpisodes = document.createElement('button');
+        tabEpisodes.type = 'button';
+        tabEpisodes.className = 'cr-ep-tab-btn is-active';
+        tabEpisodes.textContent = 'Серии';
+
+        tabsBar.appendChild(tabEpisodes);
+
+        if (headerEl) {
+            headerEl.replaceWith(tabsBar);
+        } else {
+            gridEl.insertAdjacentElement('beforebegin', tabsBar);
+        }
+
+        return tabsBar;
+    }
+
+    function mountChronologyTab(sectionEl, watchOrderSource) {
+        if (!sectionEl || !watchOrderSource) return;
+        if (sectionEl.getAttribute('data-cr-chronology-mounted') === 'true') return;
+
+        var gridEl = sectionEl.querySelector('.cr-ep-grid');
+        if (!gridEl) return;
+
+        ensureChronologyStyles();
+        var tabsBar = ensureTabsBarExists(sectionEl);
+        if (!tabsBar) return;
+
+        sectionEl.setAttribute('data-cr-chronology-mounted', 'true');
+
+        // Создаём панель Хронологии с точной копией исходной разметки «Порядок просмотра»
+        var chronologyPane = document.createElement('div');
+        chronologyPane.className = 'cr-ep-chronology-pane';
+
+        var clonedContent = watchOrderSource.cloneNode(true);
+        clonedContent.removeAttribute('data-cr-cleaner-hidden');
+        clonedContent.querySelectorAll('[data-cr-cleaner-hidden]').forEach(function(el) {
+            el.removeAttribute('data-cr-cleaner-hidden');
+        });
+        chronologyPane.innerHTML = clonedContent.innerHTML;
+
+        // Вставляем панель Хронологии после сетки серий
+        gridEl.insertAdjacentElement('afterend', chronologyPane);
+
+        // Создаём кнопку вкладки «Хронология» строго за вкладкой «Серии»
+        var tabChronology = document.createElement('button');
+        tabChronology.type = 'button';
+        tabChronology.className = 'cr-ep-tab-btn';
+        tabChronology.setAttribute('data-cr-tab', 'chronology');
+        tabChronology.textContent = 'Хронология';
+
+        var allTabs = Array.from(tabsBar.querySelectorAll('.cr-ep-tab-btn'));
+        var episodesTab = allTabs.find(function(b) {
+            return /серии/i.test(b.textContent || '');
+        }) || allTabs.at(-1);
+
+        if (episodesTab) {
+            episodesTab.insertAdjacentElement('afterend', tabChronology);
+        } else {
+            tabsBar.appendChild(tabChronology);
+        }
+
+        // Единый обработчик переключения между всеми вкладками панели (Трейлер / Серии / Хронология)
+        tabsBar.addEventListener('click', function(e) {
+            var clickedBtn = e.target.closest('.cr-ep-tab-btn');
+            if (!clickedBtn) return;
+
+            var trailerPane = sectionEl.querySelector('.cr-ep-trailer-pane');
+
+            if (clickedBtn === tabChronology) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
+                tabsBar.querySelectorAll('.cr-ep-tab-btn').forEach(function(b) {
+                    b.classList.remove('is-active');
+                });
+                tabChronology.classList.add('is-active');
+
+                gridEl.style.setProperty('display', 'none', 'important');
+                if (trailerPane) {
+                    trailerPane.style.setProperty('display', 'none', 'important');
+                    var activeIframe = trailerPane.querySelector('iframe');
+                    if (activeIframe) activeIframe.remove();
+                }
+                chronologyPane.style.setProperty('display', 'block', 'important');
+            } else {
+                // При клике на «Трейлер» или «Серии» скрываем вкладку «Хронология»
+                tabChronology.classList.remove('is-active');
+                chronologyPane.style.setProperty('display', 'none', 'important');
+
+                // Если это была единственная вкладка «Серии» (без модуля трейлера), показываем сетку серий
+                if (!trailerPane) {
+                    clickedBtn.classList.add('is-active');
+                    gridEl.style.removeProperty('display');
+                }
+            }
+        }, true);
+    }
+    function syncFranchiseChronology() {
+        var animeId = getAnimeId();
+        if (!animeId) return;
+
+        var sectionEl = document.getElementById('cr-franchise-episodes-section');
+        if (!sectionEl || sectionEl.getAttribute('data-anime-id') !== animeId) return;
+        if (sectionEl.getAttribute('data-cr-chronology-mounted') === 'true') return;
+
+        var watchOrderBlock = findWatchOrderBlock();
+        if (!watchOrderBlock) return;
+
+        mountChronologyTab(sectionEl, watchOrderBlock);
+    }
+
+    window.addEventListener('popstate', syncFranchiseChronology);
+    setInterval(syncFranchiseChronology, 400);
+})();
+
+// ==UserScript==
+// @name         Anime 365 Flag Cutout Patch
+// @namespace    http://tampermonkey.net
+// @version      1.0
+// @description  Заменяет черный цвет на прозрачный вырез ТОЛЬКО для кнопки флажка (.cr-hero-flag-btn)
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var PATCH_STYLE_ID = 'cr-flag-only-transparent-patch';
+
+    function patchFlagButton() {
+        var posterHost = document.getElementById('cr-poster-host');
+        if (!posterHost || !posterHost.shadowRoot) return;
+        var sr = posterHost.shadowRoot;
+
+        var flagBtn = sr.querySelector('.cr-hero-flag-btn');
+        if (!flagBtn) return;
+
+        if (!sr.getElementById(PATCH_STYLE_ID)) {
+            var st = document.createElement('style');
+            st.id = PATCH_STYLE_ID;
+            st.textContent =
+                '.cr-hero-flag-btn {' +
+                '  background: transparent !important;' +
+                '  border: 2px solid #f47521 !important;' +
+                '  color: #f47521 !important;' +
+                '}' +
+                '.cr-hero-flag-btn .flag-normal-icon {' +
+                '  display: block !important;' +
+                '  width: 24px !important;' +
+                '  height: 24px !important;' +
+                '  fill: #f47521 !important;' +
+                '}' +
+                '.cr-hero-flag-btn .flag-hover-icon {' +
+                '  display: none !important;' +
+                '  width: 44px !important;' +
+                '  height: 44px !important;' +
+                '}' +
+                '.cr-hero-flag-btn:hover, .cr-hero-flag-btn.is-active {' +
+                '  background: transparent !important;' +
+                '  border-color: transparent !important;' +
+                '}' +
+                '.cr-hero-flag-btn:hover .flag-normal-icon, .cr-hero-flag-btn.is-active .flag-normal-icon {' +
+                '  display: none !important;' +
+                '}' +
+                '.cr-hero-flag-btn:hover .flag-hover-icon, .cr-hero-flag-btn.is-active .flag-hover-icon {' +
+                '  display: block !important;' +
+                '}';
+            sr.appendChild(st);
+        }
+
+        if (flagBtn.getAttribute('data-flag-patched') === '1') return;
+        flagBtn.setAttribute('data-flag-patched', '1');
+
+        flagBtn.innerHTML =
+            '<svg class="flag-normal-icon" xmlns="http://w3.org" viewBox="0 0 24 24" aria-hidden="true">' +
+            '  <path fill="#f47521" d="M5 3h14v18l-7-4.5L5 21V3z"></path>' +
+            '</svg>' +
+            '<svg class="flag-hover-icon" xmlns="http://w3.org" viewBox="0 0 44 44" aria-hidden="true">' +
+            '  <path fill="#f47521" fill-rule="evenodd" d="M22 0A22 22 0 1 0 22 44A22 22 0 1 0 22 0ZM15 12H29V30L22 25.5L15 30V12Z"></path>' +
+            '</svg>';
+    }
+
+    setInterval(patchFlagButton, 400);
+})();
+
+// ==UserScript==
+// @name         Anime 365 Flag Hover Scale Patch
+// @namespace    http://tampermonkey.net
+// @version      1.2
+// @description  Умеренно увеличивает значок флажка при наведении (scale 1.12) и опускает на высоту контура (2px)
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var STYLE_ID = 'cr-flag-hover-scale-patch';
+
+    function injectScalePatch() {
+        var host = document.getElementById('cr-poster-host');
+        if (!host || !host.shadowRoot) return;
+        var sr = host.shadowRoot;
+
+        var st = sr.getElementById(STYLE_ID);
+        if (!st) {
+            st = document.createElement('style');
+            st.id = STYLE_ID;
+            st.textContent =
+                'a.cr-hero-flag-btn {' +
+                '  overflow: hidden !important;' +
+                '  transition: transform 0.16s ease, border-color 0.16s ease !important;' +
+                '}' +
+                'a.cr-hero-flag-btn svg {' +
+                '  transition: transform 0.16s ease !important;' +
+                '  transform-origin: center center !important;' +
+                '}' +
+                'a.cr-hero-flag-btn:hover,' +
+                'a.cr-hero-flag-btn.is-active {' +
+                '  border-color: transparent !important;' +
+                '}' +
+                'a.cr-hero-flag-btn:hover svg,' +
+                'a.cr-hero-flag-btn.is-active svg {' +
+                '  transform: translateY(2px) scale(1.12) !important;' +
+                '}';
+            sr.appendChild(st);
+        } else if (sr.lastElementChild !== st) {
+            sr.appendChild(st);
+        }
+    }
+
+    setInterval(injectScalePatch, 250);
+})();
+
+
+
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Franchise Links
+// @namespace    http://tampermonkey.net
+// @version      1.2
+// @description  Кнопки Crunchyroll с серыми тултипами, оранжевым флажком, встроенной панелью списка и окном соцсетей из ya-share2
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var STYLE_ID = 'cr-franchise-links-modal-style';
+    var MODAL_ID = 'cr-share-modal-overlay';
+    var LIST_POPOVER_ID = 'cr-hero-list-popover';
+    var isListPanelOpen = false;
+    var parkedListPanel = null;
+    var parkedListPlaceholder = null;
+
+    function getAnimeId() {
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var segments = path.split('/').filter(Boolean);
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
+        var dashIdx = slug.lastIndexOf('-');
+        if (dashIdx === -1) return null;
+        var id = slug.slice(dashIdx + 1);
+        return /^\d+$/.test(id) ? id : null;
+    }
+
+    function ensureGlobalStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+        var st = document.createElement('style');
+        st.id = STYLE_ID;
+        st.textContent =
+            '#' + MODAL_ID + ' {' +
+            '  position: fixed !important; inset: 0 !important; z-index: 2147483646 !important;' +
+            '  background: rgba(0, 0, 0, 0.85) !important; display: none; align-items: center !important; justify-content: center !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important; padding: 20px !important; box-sizing: border-box !important;' +
+            '}' +
+            '#' + MODAL_ID + '.is-open { display: flex !important; }' +
+            '.cr-share-dialog {' +
+            '  position: relative !important; width: 100% !important; max-width: 660px !important;' +
+            '  background: #23252b !important; color: #ffffff !important; padding: 34px 36px 30px 36px !important;' +
+            '  box-shadow: 0 22px 56px rgba(0, 0, 0, 0.96) !important; border-radius: 0 !important; box-sizing: border-box !important;' +
+            '}' +
+            '.cr-share-close, .cr-share-close:focus, .cr-share-close:active {' +
+            '  position: absolute !important; top: 16px !important; right: 18px !important;' +
+            '  background: transparent !important; border: none !important; outline: none !important; box-shadow: none !important;' +
+            '  color: #a0a0a0 !important; font-size: 26px !important; line-height: 1 !important; cursor: pointer !important; padding: 4px !important;' +
+            '}' +
+            '.cr-share-close:hover { color: #ffffff !important; background: transparent !important; }' +
+            '.cr-share-title {' +
+            '  font-size: 24px !important; font-weight: 700 !important; color: #ffffff !important;' +
+            '  margin: 0 0 28px 0 !important; padding: 0 !important; text-align: center !important; width: 100% !important;' +
+            '}' +
+            '.cr-share-options {' +
+            '  display: flex !important; flex-wrap: wrap !important; align-items: flex-start !important; justify-content: center !important;' +
+            '  gap: 24px 28px !important; margin-bottom: 26px !important;' +
+            '}' +
+            '.cr-share-option, .cr-share-option:focus, .cr-share-option:active {' +
+            '  display: flex !important; flex-direction: column !important; align-items: center !important; gap: 10px !important;' +
+            '  background: transparent !important; border: none !important; outline: none !important; box-shadow: none !important;' +
+            '  text-decoration: none !important; color: #ffffff !important; cursor: pointer !important; padding: 0 !important; min-width: 76px !important;' +
+            '}' +
+            '.cr-share-option:hover .cr-share-opt-label { color: #f47521 !important; }' +
+            '.cr-share-circle {' +
+            '  width: 64px !important; height: 64px !important; border-radius: 50% !important;' +
+            '  display: flex !important; align-items: center !important; justify-content: center !important;' +
+            '  color: #ffffff !important; transition: transform 0.16s ease !important; box-shadow: 0 4px 12px rgba(0,0,0,0.45) !important;' +
+            '}' +
+            '.cr-share-option:hover .cr-share-circle { transform: scale(1.07); }' +
+            '.cr-share-circle svg { width: 30px !important; height: 30px !important; fill: #ffffff !important; display: block !important; }' +
+            '.cr-share-opt-label { font-size: 14px !important; font-weight: 700 !important; color: #ffffff !important; text-align: center !important; transition: color 0.15s ease !important; }' +
+
+            '.cr-share-tg-box {' +
+            '  border-top: 1px solid rgba(255, 255, 255, 0.14) !important;' +
+            '  padding-top: 18px !important; margin-top: 4px !important; text-align: center !important;' +
+            '  font-size: 14px !important; line-height: 1.6 !important; color: #dcdcdc !important;' +
+            '}' +
+            '.cr-share-tg-box .m-small-title {' +
+            '  font-size: 15px !important; font-weight: 700 !important; color: #ffffff !important; margin-bottom: 6px !important;' +
+            '}' +
+            '.cr-share-tg-box a {' +
+            '  color: #f47521 !important; font-weight: 700 !important; text-decoration: none !important;' +
+            '}' +
+            '.cr-share-tg-box a:hover { text-decoration: underline !important; }' +
+
+            '#' + LIST_POPOVER_ID + ' {' +
+            '  position: fixed !important; z-index: 2147483640 !important;' +
+            '  width: 340px !important; max-width: calc(100vw - 24px) !important;' +
+            '  background: #2b2e36 !important; color: #ffffff !important;' +
+            '  border: 1px solid #454954 !important; border-radius: 0 !important;' +
+            '  padding: 18px 20px 14px 20px !important; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.92) !important;' +
+            '  font-family: Lato, Roboto, Arial, sans-serif !important; display: none; box-sizing: border-box !important;' +
+            '}' +
+            '#' + LIST_POPOVER_ID + '.is-open { display: block !important; }' +
+            '#' + LIST_POPOVER_ID + ' .m-small-title {' +
+            '  font-size: 16px !important; font-weight: 700 !important; color: #ffffff !important; margin-bottom: 12px !important;' +
+            '}' +
+            '#' + LIST_POPOVER_ID + ' .input-field { margin-top: 12px !important; margin-bottom: 12px !important; }' +
+            '#' + LIST_POPOVER_ID + ' label { color: #b8bcc6 !important; font-size: 12px !important; }' +
+            '#' + LIST_POPOVER_ID + ' input.select-dropdown, #' + LIST_POPOVER_ID + ' input[type="number"], #' + LIST_POPOVER_ID + ' textarea {' +
+            '  color: #ffffff !important; border-bottom-color: #6c7280 !important; background: transparent !important;' +
+            '}' +
+            '#' + LIST_POPOVER_ID + ' .caret { color: #ffffff !important; }' +
+            '#' + LIST_POPOVER_ID + ' ul.dropdown-content {' +
+            '  background: #23252b !important; border: 1px solid #454954 !important;' +
+            '}' +
+            '#' + LIST_POPOVER_ID + ' ul.dropdown-content li > span { color: #ffffff !important; font-size: 14px !important; }' +
+            '#' + LIST_POPOVER_ID + ' ul.dropdown-content li:hover, #' + LIST_POPOVER_ID + ' ul.dropdown-content li.selected {' +
+            '  background: #3a3e49 !important;' +
+            '}';
+        document.head.appendChild(st);
+    }
+    function findNativeListPanel() {
+        var statusSelect = document.getElementById('UsersRates_status');
+        if (statusSelect) {
+            var block = statusSelect.closest('.card-content > div') || statusSelect.closest('form > div') || statusSelect.parentElement.parentElement.parentElement;
+            if (block) return block;
+        }
+        var titles = Array.from(document.querySelectorAll('.m-small-title'));
+        for (var i = 0; i < titles.length; i++) {
+            if (/в\s+вашем\s+списке/i.test(titles.at(i).textContent || '')) {
+                return titles.at(i).parentElement;
+            }
+        }
+        return null;
+    }
+
+    function returnParkedListPanel() {
+        if (parkedListPanel && parkedListPlaceholder && parkedListPlaceholder.parentNode) {
+            parkedListPlaceholder.parentNode.insertBefore(parkedListPanel, parkedListPlaceholder);
+            parkedListPlaceholder.remove();
+            parkedListPlaceholder = null;
+            parkedListPanel = null;
+        }
+        var pop = document.getElementById(LIST_POPOVER_ID);
+        if (pop) pop.classList.remove('is-open');
+        isListPanelOpen = false;
+    }
+
+    function toggleListPanel(anchorBtn) {
+        ensureGlobalStyles();
+        var pop = document.getElementById(LIST_POPOVER_ID);
+
+        if (isListPanelOpen) {
+            returnParkedListPanel();
+            return;
+        }
+
+        var nativePanel = parkedListPanel || findNativeListPanel();
+        if (!nativePanel) {
+            var addBtn = document.querySelector('button[name="yt1"]');
+            if (addBtn) addBtn.click();
+            return;
+        }
+
+        if (!pop) {
+            pop = document.createElement('div');
+            pop.id = LIST_POPOVER_ID;
+            document.body.appendChild(pop);
+        }
+
+        if (!parkedListPanel) {
+            parkedListPanel = nativePanel;
+            parkedListPlaceholder = document.createComment('cr-list-placeholder');
+            nativePanel.parentNode.insertBefore(parkedListPlaceholder, nativePanel);
+        }
+
+        nativePanel.removeAttribute('data-cr-cleaner-hidden');
+        nativePanel.querySelectorAll('[data-cr-cleaner-hidden]').forEach(function(el) {
+            el.removeAttribute('data-cr-cleaner-hidden');
+        });
+
+        pop.innerHTML = '';
+        pop.appendChild(nativePanel);
+
+        if (anchorBtn) {
+            var rect = anchorBtn.getBoundingClientRect();
+            var leftPos = Math.max(12, Math.min(window.innerWidth - 352, rect.left - 140));
+            var topPos = Math.min(window.innerHeight - 360, rect.bottom + 12);
+            pop.style.left = Math.round(leftPos) + 'px';
+            pop.style.top = Math.round(topPos) + 'px';
+        }
+
+        pop.classList.add('is-open');
+        isListPanelOpen = true;
+    }
+    function getServiceVisual(serviceClass, title) {
+        var s = (serviceClass + ' ' + title).toLowerCase();
+        if (s.indexOf('vkontakte') !== -1 || s.indexOf('вконтакте') !== -1) {
+            return {
+                bg: '#0077FF',
+                label: 'ВКонтакте',
+                svg: '<svg viewBox="0 0 24 24"><path d="M13.16 18.92c-5.47 0-8.59-3.75-8.72-9.99h2.74c.09 4.58 2.11 6.52 3.71 6.92V8.93h2.58v3.95c1.58-.17 3.24-1.97 3.8-3.95h2.58c-.43 2.44-2.23 4.24-3.51 4.98 1.28.6 3.33 2.17 4.11 5.01h-2.84c-.61-1.9-2.13-3.37-4.14-3.57v3.57h-.31z"/></svg>'
+            };
+        }
+        if (s.indexOf('odnoklassniki') !== -1 || s.indexOf('одноклассники') !== -1) {
+            return {
+                bg: '#EE8208',
+                label: 'Одноклассники',
+                svg: '<svg viewBox="0 0 24 24"><path d="M12 11.5a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5zm0-5.3a1.55 1.55 0 1 1 0 3.1 1.55 1.55 0 0 1 0-3.1zm4.6 6.4c-.4-.7-1.4-.9-2.1-.4-.8.5-1.6.7-2.5.7s-1.7-.2-2.5-.7c-.7-.5-1.7-.3-2.1.4-.4.7-.2 1.6.5 2.1.9.6 2 1 3.1 1.1l-2.6 2.6c-.6.6-.6 1.5 0 2.1.3.3.7.4 1.1.4.4 0 .8-.1 1.1-.4l2.4-2.4 2.4 2.4c.6.6 1.5.6 2.1 0 .6-.6.6-1.5 0-2.1l-2.6-2.6c1.1-.1 2.2-.5 3.1-1.1.7-.5.9-1.4.5-2.1z"/></svg>'
+            };
+        }
+        if (s.indexOf('twitter') !== -1 || s.indexOf('x') !== -1) {
+            return {
+                bg: '#000000',
+                label: 'X',
+                svg: '<svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>'
+            };
+        }
+        if (s.indexOf('facebook') !== -1) {
+            return {
+                bg: '#3C5A9A',
+                label: 'Facebook',
+                svg: '<svg viewBox="0 0 24 24"><path d="M14 13.5h2.5l1-4H14v-2c0-1.03 0-2 2-2h1.5V2.14c-.326-.043-1.557-.14-2.857-.14C11.928 2 10 3.657 10 6.7v2.8H7v4h3V22h4v-8.5z"/></svg>'
+            };
+        }
+        if (s.indexOf('telegram') !== -1) {
+            return {
+                bg: '#26A5E4',
+                label: 'Telegram',
+                svg: '<svg viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>'
+            };
+        }
+        return {
+            bg: '#4b505c',
+            label: title || 'Поделиться',
+            svg: '<svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>'
+        };
+    }
+
+    function openShareModal() {
+        ensureGlobalStyles();
+        var existing = document.getElementById(MODAL_ID);
+        if (existing) existing.remove();
+
+        var overlay = document.createElement('div');
+        overlay.id = MODAL_ID;
+
+        var dialog = document.createElement('div');
+        dialog.className = 'cr-share-dialog';
+
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'cr-share-close';
+        closeBtn.innerHTML = '&#10005;';
+        closeBtn.onclick = function() { overlay.classList.remove('is-open'); };
+
+        var heading = document.createElement('h2');
+        heading.className = 'cr-share-title';
+        heading.textContent = 'Поделиться сериалом';
+
+        var optionsWrap = document.createElement('div');
+        optionsWrap.className = 'cr-share-options';
+
+        var yaLinks = Array.from(document.querySelectorAll('.ya-share2__list a.ya-share2__link'));
+        yaLinks.forEach(function(a) {
+            var li = a.closest('.ya-share2__item');
+            var serviceCls = li ? li.className : '';
+            var title = a.getAttribute('title') || (a.querySelector('.ya-share2__title') ? a.querySelector('.ya-share2__title').textContent.trim() : '');
+            var vis = getServiceVisual(serviceCls, title);
+
+            var itemLink = document.createElement('a');
+            itemLink.className = 'cr-share-option';
+            itemLink.href = a.getAttribute('href') || '#';
+            itemLink.target = '_blank';
+            itemLink.rel = 'nofollow noopener';
+
+            var circle = document.createElement('span');
+            circle.className = 'cr-share-circle';
+            circle.style.backgroundColor = vis.bg;
+            circle.innerHTML = vis.svg;
+
+            var lbl = document.createElement('span');
+            lbl.className = 'cr-share-opt-label';
+            lbl.textContent = title || vis.label;
+
+            itemLink.appendChild(circle);
+            itemLink.appendChild(lbl);
+            optionsWrap.appendChild(itemLink);
+        });
+
+        var copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'cr-share-option';
+        var copyCircle = document.createElement('span');
+        copyCircle.className = 'cr-share-circle';
+        copyCircle.style.backgroundColor = '#3a3d46';
+        copyCircle.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+        var copyLabel = document.createElement('span');
+        copyLabel.className = 'cr-share-opt-label';
+        copyLabel.textContent = 'Копировать';
+        copyBtn.appendChild(copyCircle);
+        copyBtn.appendChild(copyLabel);
+        copyBtn.onclick = function() {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(window.location.href);
+            }
+            copyLabel.textContent = 'Скопировано';
+            setTimeout(function() { copyLabel.textContent = 'Копировать'; }, 1400);
+        };
+        optionsWrap.appendChild(copyBtn);
+
+        dialog.appendChild(closeBtn);
+        dialog.appendChild(heading);
+        dialog.appendChild(optionsWrap);
+
+        var shareBlocks = Array.from(document.querySelectorAll('.m-translation-view__share'));
+        if (shareBlocks.length > 0) {
+            var tgBox = document.createElement('div');
+            tgBox.className = 'cr-share-tg-box';
+            shareBlocks.forEach(function(sb) {
+                var clone = sb.cloneNode(true);
+                clone.removeAttribute('data-cr-cleaner-hidden');
+                clone.querySelectorAll('[data-cr-cleaner-hidden]').forEach(function(n) {
+                    n.removeAttribute('data-cr-cleaner-hidden');
+                });
+                clone.querySelectorAll('.ya-share2').forEach(function(y) { y.remove(); });
+                Array.from(clone.querySelectorAll('*')).forEach(function(el) {
+                    if (/^поделиться\s+аниме/i.test((el.textContent || '').trim()) && el.children.length === 0) {
+                        el.remove();
+                    }
+                });
+                tgBox.innerHTML += clone.innerHTML;
+            });
+            dialog.appendChild(tgBox);
+        }
+
+        overlay.appendChild(dialog);
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) overlay.classList.remove('is-open');
+        });
+        document.body.appendChild(overlay);
+        overlay.classList.add('is-open');
+    }
+        function findWatchButtonInShadow(sr) {
+        var candidates = Array.from(sr.querySelectorAll('a, button'));
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates.at(i);
+            if (el.closest('#cr-hero-links-bar')) continue;
+            var txt = (el.textContent || '').trim();
+            if (/смотреть|просмотр/i.test(txt)) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    function injectActionsNextToWatch(posterHost, animeId) {
+        if (!posterHost || !posterHost.shadowRoot) return;
+        var sr = posterHost.shadowRoot;
+
+        if (!sr.getElementById('cr-links-shadow-style')) {
+            var sStyle = document.createElement('style');
+            sStyle.id = 'cr-links-shadow-style';
+            sStyle.textContent =
+                '.cr-watch-pill-btn {' +
+                '  border-radius: 999px !important;' +
+                '  padding-left: 24px !important;' +
+                '  padding-right: 24px !important;' +
+                '}' +
+                '.cr-hero-actions-row {' +
+                '  display: inline-flex !important;' +
+                '  align-items: center !important;' +
+                '  gap: 16px !important;' +
+                '  vertical-align: middle !important;' +
+                '}' +
+                '.cr-hero-links-bar {' +
+                '  display: inline-flex !important;' +
+                '  align-items: center !important;' +
+                '  gap: 16px !important;' +
+                '  margin: 0 !important;' +
+                '  padding: 0 !important;' +
+                '}' +
+                '.cr-hero-tip-wrap {' +
+                '  position: relative !important;' +
+                '  display: inline-flex !important;' +
+                '  align-items: center !important;' +
+                '  justify-content: center !important;' +
+                '}' +
+                '.cr-hero-tooltip {' +
+                '  position: absolute !important;' +
+                '  bottom: calc(100% + 12px) !important;' +
+                '  left: 50% !important;' +
+                '  transform: translateX(-50%) !important;' +
+                '  background: #3b3e47 !important;' +
+                '  color: #ffffff !important;' +
+                '  font-family: Lato, Roboto, Arial, sans-serif !important;' +
+                '  font-size: 14px !important;' +
+                '  font-weight: 700 !important;' +
+                '  line-height: 1.2 !important;' +
+                '  padding: 9px 14px !important;' +
+                '  border-radius: 0 !important;' +
+                '  white-space: nowrap !important;' +
+                '  pointer-events: none !important;' +
+                '  opacity: 0;' +
+                '  visibility: hidden;' +
+                '  transition: opacity 0.14s ease !important;' +
+                '  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.75) !important;' +
+                '  z-index: 99 !important;' +
+                '}' +
+                '.cr-hero-tooltip::after {' +
+                '  content: "" !important;' +
+                '  position: absolute !important;' +
+                '  top: 100% !important;' +
+                '  left: 50% !important;' +
+                '  transform: translateX(-50%) !important;' +
+                '  border-width: 6px 6px 0 6px !important;' +
+                '  border-style: solid !important;' +
+                '  border-color: #3b3e47 transparent transparent transparent !important;' +
+                '}' +
+                '.cr-hero-tip-wrap:hover .cr-hero-tooltip {' +
+                '  opacity: 1 !important;' +
+                '  visibility: visible !important;' +
+                '}' +
+                '.cr-hero-flag-btn {' +
+                '  width: 44px !important; height: 44px !important; padding: 0 !important;' +
+                '  background: transparent !important; border: 2px solid #f47521 !important;' +
+                '  border-radius: 50% !important; color: #f47521 !important; overflow: hidden !important;' +
+                '  display: inline-flex !important; align-items: center !important; justify-content: center !important;' +
+                '  cursor: pointer !important; text-decoration: none !important; box-sizing: border-box !important;' +
+                '}' +
+                '.cr-hero-flag-btn .flag-idle { display: block !important; width: 24px !important; height: 24px !important; }' +
+                '.cr-hero-flag-btn .flag-hover { display: none !important; width: 44px !important; height: 44px !important; }' +
+                '.cr-hero-flag-btn:hover, .cr-hero-flag-btn.is-active {' +
+                '  border: none !important; background: transparent !important;' +
+                '}' +
+                '.cr-hero-flag-btn:hover .flag-idle, .cr-hero-flag-btn.is-active .flag-idle { display: none !important; }' +
+                '.cr-hero-flag-btn:hover .flag-hover, .cr-hero-flag-btn.is-active .flag-hover { display: block !important; }' +
+                '.cr-hero-plain-btn {' +
+                '  width: 38px !important; height: 38px !important; padding: 0 !important;' +
+                '  background: transparent !important; border: none !important; outline: none !important;' +
+                '  box-shadow: none !important; border-radius: 0 !important;' +
+                '  color: #f47521 !important;' +
+                '  display: inline-flex !important; align-items: center !important; justify-content: center !important;' +
+                '  cursor: pointer !important; transition: color 0.15s ease, transform 0.12s ease !important;' +
+                '}' +
+                '.cr-hero-plain-btn:hover {' +
+                '  background: transparent !important;' +
+                '  color: #ff944d !important;' +
+                '  transform: scale(1.08);' +
+                '}' +
+                '.cr-hero-plain-btn svg {' +
+                '  width: 26px !important; height: 26px !important; fill: currentColor !important; display: block !important;' +
+                '}';
+            sr.appendChild(sStyle);
+        }
+
+        var watchBtn = findWatchButtonInShadow(sr);
+        var existingBar = sr.getElementById('cr-hero-links-bar');
+
+        if (watchBtn && !watchBtn.classList.contains('cr-watch-pill-btn')) {
+            watchBtn.classList.add('cr-watch-pill-btn');
+        }
+
+        if (existingBar && existingBar.getAttribute('data-anime-id') === animeId) {
+            if (watchBtn && watchBtn.nextElementSibling !== existingBar) {
+                watchBtn.insertAdjacentElement('afterend', existingBar);
+            }
+            return;
+        }
+        if (existingBar) existingBar.remove();
+
+        var addTransLink = document.querySelector('a[href*="/translations/create?seriesId=' + animeId + '"]') ||
+                           document.querySelector('a[href*="/translations/create"]');
+
+        var bar = document.createElement('div');
+        bar.id = 'cr-hero-links-bar';
+        bar.className = 'cr-hero-links-bar';
+        bar.setAttribute('data-anime-id', animeId);
+
+        function wrapWithTooltip(el, tipText) {
+            var wrap = document.createElement('div');
+            wrap.className = 'cr-hero-tip-wrap';
+            var tip = document.createElement('div');
+            tip.className = 'cr-hero-tooltip';
+            tip.textContent = tipText;
+            wrap.appendChild(tip);
+            wrap.appendChild(el);
+            return wrap;
+        }
+
+        var flagBtn = document.createElement('a');
+        flagBtn.className = 'cr-hero-flag-btn';
+        flagBtn.target = '_blank';
+        flagBtn.rel = 'noopener noreferrer';
+        flagBtn.href = addTransLink
+            ? addTransLink.getAttribute('href')
+            : ('/translations/create?seriesId=' + animeId);
+        flagBtn.innerHTML =
+            '<svg class="flag-idle" xmlns="http://w3.org" viewBox="0 0 24 24" aria-hidden="true">' +
+            '<path fill="#f47521" d="M5 3h14v18l-7-4.5L5 21V3z"></path>' +
+            '</svg>' +
+            '<svg class="flag-hover" xmlns="http://w3.org" viewBox="0 0 44 44" aria-hidden="true">' +
+            '<path fill="#f47521" fill-rule="evenodd" d="M0 0H44V44H0ZM15 12V30L22 25.5L29 30V12Z"></path>' +
+            '</svg>';
+        bar.appendChild(wrapWithTooltip(flagBtn, 'Добавить перевод'));
+
+        var plusBtn = document.createElement('button');
+        plusBtn.type = 'button';
+        plusBtn.className = 'cr-hero-plain-btn';
+        plusBtn.innerHTML =
+            '<svg xmlns="http://w3.org" viewBox="0 0 24 24" aria-hidden="true">' +
+            '<path d="M13 3v8h8v2h-8v8h-2v-8H3v-2h8V3z"></path>' +
+            '</svg>';
+        plusBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleListPanel(plusBtn);
+        });
+        bar.appendChild(wrapWithTooltip(plusBtn, 'Мой список'));
+
+        var shareBtn = document.createElement('button');
+        shareBtn.type = 'button';
+        shareBtn.className = 'cr-hero-plain-btn';
+        shareBtn.innerHTML =
+            '<svg xmlns="http://w3.org" viewBox="0 0 24 24" aria-hidden="true">' +
+            '<path d="M18 2c2.21 0 4 1.79 4 4s-1.79 4-4 4c-1.385 0-2.606-.704-3.323-1.773l-5.02 2.151c.22.496.343 1.045.343 1.622 0 .577-.122 1.126-.342 1.622l5.019 2.151C15.394 14.703 16.615 14 18 14c2.21 0 4 1.79 4 4s-1.79 4-4 4-4-1.79-4-4c0-.113.005-.225.014-.335L8.35 15.238C7.69 15.718 6.878 16 6 16c-2.21 0-4-1.79-4-4s1.79-4 4-4c.878 0 1.69.283 2.35.762l5.664-2.427C14.004 6.225 14 6.113 14 6c0-2.21 1.79-4 4-4zm0 14c-1.105 0-2 .895-2 2s.895 2 2 2 2-.895 2-2-.895-2-2-2zM6 10c-1.105 0-2 .895-2 2s.895 2 2 2 2-.895 2-2-.895-2-2-2zm12-6c-1.105 0-2 .895-2 2s.895 2 2 2 2-.895 2-2-.895-2-2-2z"></path>' +
+            '</svg>';
+        shareBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+openShareModal();
+});
+bar.appendChild(wrapWithTooltip(shareBtn, 'Поделиться'));
+if (watchBtn && watchBtn.parentElement) {
+var parent = watchBtn.parentElement;
+if (!parent.classList.contains('cr-hero-actions-row')) {
+var rowWrap = document.createElement('div');
+rowWrap.className = 'cr-hero-actions-row';
+watchBtn.insertAdjacentElement('beforebegin', rowWrap);
+rowWrap.appendChild(watchBtn);
+rowWrap.appendChild(bar);
+} else {
+watchBtn.insertAdjacentElement('afterend', bar);
+}
+} else {
+var gridTarget = sr.getElementById('cr-grid') || sr.querySelector('.content-wrap');
+if (gridTarget) gridTarget.appendChild(bar);
+}
+}
+document.addEventListener('click', function(e) {
+if (!isListPanelOpen) return;
+var pop = document.getElementById(LIST_POPOVER_ID);
+var host = document.getElementById('cr-poster-host');
+if (pop && pop.contains(e.target)) return;
+if (host && e.target === host) return;
+returnParkedListPanel();
+});
+function syncFranchiseLinks() {
+var animeId = getAnimeId();
+var posterHost = document.getElementById('cr-poster-host');
+var franchiseSection = document.getElementById('cr-franchise-episodes-section');
+if (!animeId || !posterHost || posterHost.getAttribute('data-anime-id') !== animeId || !franchiseSection) {
+returnParkedListPanel();
+return;
+}
+injectActionsNextToWatch(posterHost, animeId);
+}
+window.addEventListener('popstate', function() {
+returnParkedListPanel();
+setTimeout(syncFranchiseLinks, 450);
+});
+setInterval(syncFranchiseLinks, 450);
+})();
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Meta Links
+// @namespace    http://tampermonkey.net
+// @version      1.3
+// @description  Добавляет строку «Ссылки: ...» в #cr-wrap > div.cr-bottom-flex > div.cr-right с серыми запятыми, белым цветом строго при наведении и снятием фокуса после клика
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var ROW_ID = 'cr-meta-external-links-row';
+    var STYLE_ID = 'cr-meta-external-links-style';
+
+    function getAnimeId() {
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var segments = path.split('/').filter(Boolean);
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
+        var dashIdx = slug.lastIndexOf('-');
+        if (dashIdx === -1) return null;
+        var id = slug.slice(dashIdx + 1);
+        return /^\d+$/.test(id) ? id : null;
+    }
+
+    function findTargetRightColumn() {
+        var posterHost = document.getElementById('cr-poster-host');
+        if (posterHost && posterHost.shadowRoot) {
+            var srRight = posterHost.shadowRoot.querySelector('#cr-wrap > div.cr-bottom-flex > div.cr-right');
+            if (srRight) return { root: posterHost.shadowRoot, rightCol: srRight };
+        }
+        var docRight = document.querySelector('#cr-wrap > div.cr-bottom-flex > div.cr-right');
+        if (docRight) return { root: document, rightCol: docRight };
+        return null;
+    }
+
+    function ensureStyles(root, baseLinkColor) {
+        var hostTarget = root === document ? document.head : root;
+        if (!hostTarget) return;
+        var existing = root.getElementById ? root.getElementById(STYLE_ID) : document.getElementById(STYLE_ID);
+        if (existing) return;
+
+        var st = document.createElement('style');
+        st.id = STYLE_ID;
+        st.textContent =
+            '#' + ROW_ID + ' .cr-meta-ext-link,' +
+            '#' + ROW_ID + ' .cr-meta-ext-link:visited,' +
+            '#' + ROW_ID + ' .cr-meta-ext-link:focus,' +
+            '#' + ROW_ID + ' .cr-meta-ext-link:active {' +
+            '  color: ' + baseLinkColor + ' !important;' +
+            '  text-decoration: none !important;' +
+            '  outline: none !important;' +
+            '  transition: color 0.15s ease !important;' +
+            '}' +
+            '#' + ROW_ID + ' .cr-meta-ext-link:hover {' +
+            '  color: #ffffff !important;' +
+            '  text-decoration: none !important;' +
+            '}' +
+            '#' + ROW_ID + ' .cr-meta-sep {' +
+            '  color: #a0a0a0 !important;' +
+            '}';
+        hostTarget.appendChild(st);
+    }
+
+    function injectMetaLinks() {
+        var animeId = getAnimeId();
+        if (!animeId) return;
+
+        var linksList = document.querySelector('ul.m-catalog-view-links');
+        if (!linksList) return;
+
+        var rawAnchors = Array.from(linksList.querySelectorAll('a[href]'));
+        if (rawAnchors.length === 0) return;
+
+        var target = findTargetRightColumn();
+        if (!target) return;
+
+        var rightCol = target.rightCol;
+        var existingRow = rightCol.querySelector('#' + ROW_ID);
+        if (existingRow && existingRow.getAttribute('data-anime-id') === animeId) {
+            return;
+        }
+        if (existingRow) existingRow.remove();
+
+        var existingRows = Array.from(rightCol.children).filter(function(el) {
+            return el.id !== ROW_ID && /(Жанры|Студия|Другие\s+названия)\s*:/.test(el.textContent || '');
+        });
+
+        var sampleRow = existingRows.length > 0 ? existingRows.at(-1) : rightCol.lastElementChild;
+        var sampleLink = rightCol.querySelector('a');
+        var baseLinkColor = sampleLink ? window.getComputedStyle(sampleLink).color : '#f47521';
+
+        ensureStyles(target.root, baseLinkColor);
+
+        var newRow = sampleRow ? sampleRow.cloneNode(false) : document.createElement('div');
+        newRow.id = ROW_ID;
+        newRow.setAttribute('data-anime-id', animeId);
+
+        var labelSample = sampleRow ? sampleRow.querySelector('span, b, strong, dt') : null;
+        if (labelSample) {
+            var labelEl = labelSample.cloneNode(false);
+            labelEl.textContent = 'Ссылки: ';
+            newRow.appendChild(labelEl);
+        } else {
+            newRow.appendChild(document.createTextNode('Ссылки: '));
+        }
+
+        rawAnchors.forEach(function(origA, idx) {
+            var href = origA.getAttribute('href');
+            var a = document.createElement('a');
+            a.className = 'cr-meta-ext-link';
+            a.href = href;
+            a.target = '_blank';
+            a.rel = 'nofollow noopener noreferrer';
+            a.textContent = (origA.textContent || '').trim();
+
+            a.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                a.blur();
+                window.open(href, '_blank', 'noopener,noreferrer');
+            });
+
+            newRow.appendChild(a);
+
+            if (idx < rawAnchors.length - 1) {
+                var sep = document.createElement('span');
+                sep.className = 'cr-meta-sep';
+                sep.textContent = ', ';
+                newRow.appendChild(sep);
+            }
+        });
+
+        if (sampleRow && sampleRow.parentNode === rightCol) {
+            sampleRow.insertAdjacentElement('afterend', newRow);
+        } else {
+            rightCol.appendChild(newRow);
+        }
+    }
+
+    window.addEventListener('popstate', function() {
+        setTimeout(injectMetaLinks, 400);
+    });
+
+    setInterval(injectMetaLinks, 450);
+})();
