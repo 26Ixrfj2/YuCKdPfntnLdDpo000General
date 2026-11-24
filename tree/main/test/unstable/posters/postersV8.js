@@ -14,7 +14,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var CACHE_NAME = 'cr-posters-cache-v10';
     var failedIds = {};
@@ -830,7 +830,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var LOGO_CACHE_NAME = 'cr-logos-cache-v7';
 
@@ -1144,7 +1144,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var LOGO_CACHE_NAME = 'cr-logos-cache-v10';
 
@@ -1415,7 +1415,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var FOLDER_CACHE_KEY = 'cr_franchise_folder_map_v6';
     var EXT_CACHE_KEY = 'cr_franchise_ext_map_v6';
@@ -4193,7 +4193,7 @@ setInterval(syncFranchiseLinks, 450);
     var INFO_ICON_STORAGE_KEY = 'cr_nav_info_svg_dataurl_v1';
     var AVATAR_STORAGE_KEY = 'cr_nav_user_avatar_url_v1';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var PROTO = 'https' + '://';
 
