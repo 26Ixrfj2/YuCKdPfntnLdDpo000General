@@ -5973,8 +5973,8 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 // ==UserScript==
 // @name         Anime 365 Moments 1:1 Grab Sync
 // @namespace    http://tampermonkey.net
-// @version      1.6
-// @description  Плавный стабилизатор «на поводке» при ведении кулачком (гасит микрорывки мыши) + инерционный бросок + активные клики по видео и ссылкам
+// @version      2.6
+// @description  Убрана открытая ладошка (нет мигания между ладошкой и пальцем), мёртвая зона 12px, укороченный поводок 0.36 и запрет открытия видео после кулачка
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        none
@@ -5983,32 +5983,36 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 (function() {
     'use strict';
 
-    var FOLLOW_SMOOTHING = 0.22; // Мягкость «поводка» при ведении (0.15 — мягче, 0.35 — ближе к курсору)
-    var THROW_SPEED = 1.6;       // Скорость инерционного броска при отпускании
+    var LEASH_DEADZONE = 12;     // Радиус мёртвой зоны вокруг кулачка от дрожания руки (12px)
+    var FOLLOW_SMOOTHING = 0.36; // Укороченный «поводок» (догоняющий амортизатор)
+    var THROW_SPEED = 1.6;       // Скорость инерционного броска
     var FRICTION = 0.94;         // Плавное затухание инерции
-    var DRAG_THRESHOLD = 8;      // Минимальный сдвиг в пикселях, после которого включается кулачок
+    var DRAG_THRESHOLD = 7;      // Начальный сдвиг для мгновенного включения кулачка
+    var HOLD_DELAY_MS = 110;     // Время удержания кнопки (мс), после которого включается кулачок даже без движения
 
     if (!document.getElementById('cr-moments-1to1-drag-style')) {
         var st = document.createElement('style');
         st.id = 'cr-moments-1to1-drag-style';
         st.textContent =
+            /* Убираем открытую ладошку (grab) с неактивных участков ленты, чтобы курсор не мигал */
+            '#yw_moments_by_series.cr-moments-enhanced {' +
+            '  cursor: default !important;' +
+            '}' +
+            /* Кулачок (grabbing) горит только во время реального захвата/перетаскивания */
             '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag,' +
             '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag * {' +
             '  cursor: grabbing !important;' +
-            '}' +
-            '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag a,' +
-            '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag .m-moment__thumb,' +
-            '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag img {' +
-            '  pointer-events: none !important;' +
             '}';
         (document.head || document.documentElement).appendChild(st);
     }
 
     var isDown = false;
     var hasDragged = false;
-    var blockClickOnce = false;
+    var blockClickAfterDrag = false;
+    var blockResetTimer = null;
+    var holdTimer = null;
     var startX = 0;
-    var startScrollLeft = 0;
+    var anchorX = 0;
     var targetScrollLeft = 0;
     var currentScrollFloat = 0;
     var lastX = 0;
@@ -6024,13 +6028,34 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         }
     }
 
+    function clearHoldTimer() {
+        if (holdTimer) {
+            clearTimeout(holdTimer);
+            holdTimer = null;
+        }
+    }
+
+    function startLoop(container) {
+        stopLoop();
+        rafId = requestAnimationFrame(function() {
+            tickAnimation(container);
+        });
+    }
+
+    function engageGrabMode(container, clientX) {
+        if (!container || hasDragged) return;
+        hasDragged = true;
+        anchorX = clientX;
+        container.classList.add('cr-real-drag');
+        startLoop(container);
+    }
+
     function tickAnimation(container) {
         if (!container) {
             rafId = null;
             return;
         }
 
-        // Режим 1: Кнопка мыши зажата — лента плавно догоняет цель на «поводке», гася микрорывки
         if (isDown && hasDragged) {
             var diff = targetScrollLeft - currentScrollFloat;
             if (Math.abs(diff) > 0.1) {
@@ -6043,7 +6068,6 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
             return;
         }
 
-        // Режим 2: Кнопка отпущена — сначала мягко доводим остаток «поводка», затем катим по инерции
         if (Math.abs(velocity) >= 0.25) {
             currentScrollFloat -= velocity;
             container.scrollLeft = currentScrollFloat;
@@ -6059,51 +6083,75 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     function releaseDrag() {
+        clearHoldTimer();
         var cont = activeContainer;
-        if (cont) {
-            cont.classList.remove('cr-real-drag');
-            cont.classList.remove('cr-dragging');
-        }
         if (hasDragged) {
-            blockClickOnce = true;
-            setTimeout(function() {
-                blockClickOnce = false;
-            }, 60);
+            blockClickAfterDrag = true;
+            if (blockResetTimer) clearTimeout(blockResetTimer);
+            blockResetTimer = setTimeout(function() {
+                blockClickAfterDrag = false;
+                blockResetTimer = null;
+            }, 180);
 
             var idleTime = performance.now() - lastTime;
-            // Если мышь остановили перед отпусканием — гасим остаток скорости, чтобы лента плавно встала
             if (idleTime >= 90 || Math.abs(velocity) <= 0.8) {
                 velocity = (currentScrollFloat - targetScrollLeft) * FOLLOW_SMOOTHING;
             }
+            if (cont && Math.abs(velocity) >= 0.25) {
+                startLoop(cont);
+            }
+        }
+
+        if (cont) {
+            cont.classList.remove('cr-real-drag');
+            cont.classList.remove('cr-dragging');
         }
         isDown = false;
         hasDragged = false;
         activeContainer = null;
     }
 
-    document.addEventListener('mousedown', function(e) {
+    window.addEventListener('mousedown', function(e) {
         if (e.button !== 0) return;
         var container = e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced');
         if (!container) return;
 
+        var wasRolling = Math.abs(velocity) > 0.35;
         stopLoop();
-        container.classList.remove('cr-dragging');
-        container.classList.remove('cr-real-drag');
+        clearHoldTimer();
 
         isDown = true;
         hasDragged = false;
-        blockClickOnce = false;
+        blockClickAfterDrag = false;
+        if (blockResetTimer) {
+            clearTimeout(blockResetTimer);
+            blockResetTimer = null;
+        }
         activeContainer = container;
         startX = e.clientX;
+        anchorX = e.clientX;
         lastX = e.clientX;
         lastTime = performance.now();
-        startScrollLeft = container.scrollLeft;
-        targetScrollLeft = startScrollLeft;
-        currentScrollFloat = startScrollLeft;
+        targetScrollLeft = container.scrollLeft;
+        currentScrollFloat = container.scrollLeft;
         velocity = 0;
+
+        e.stopImmediatePropagation();
+
+        if (wasRolling) {
+            engageGrabMode(container, e.clientX);
+        } else {
+            container.classList.remove('cr-dragging');
+            container.classList.remove('cr-real-drag');
+            holdTimer = setTimeout(function() {
+                if (isDown && activeContainer === container) {
+                    engageGrabMode(container, startX);
+                }
+            }, HOLD_DELAY_MS);
+        }
     }, true);
 
-    document.addEventListener('mousemove', function(e) {
+    window.addEventListener('mousemove', function(e) {
         if (!isDown || !activeContainer) return;
 
         if ((e.buttons & 1) === 0) {
@@ -6111,19 +6159,13 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
             return;
         }
 
-        var dxTotal = e.clientX - startX;
+        var dxFromStart = e.clientX - startX;
         if (!hasDragged) {
-            activeContainer.classList.remove('cr-dragging');
-            if (Math.abs(dxTotal) < DRAG_THRESHOLD) {
+            if (Math.abs(dxFromStart) < DRAG_THRESHOLD) {
                 return;
             }
-            hasDragged = true;
-            activeContainer.classList.add('cr-real-drag');
-            var cont = activeContainer;
-            stopLoop();
-            rafId = requestAnimationFrame(function() {
-                tickAnimation(cont);
-            });
+            clearHoldTimer();
+            engageGrabMode(activeContainer, e.clientX);
         }
 
         e.preventDefault();
@@ -6133,10 +6175,16 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         var dt = Math.max(1, now - lastTime);
         var dx = e.clientX - lastX;
 
-        // Обновляем только целевую точку; реальный scrollLeft плавно догоняет её в tickAnimation
-        var maxScroll = Math.max(0, activeContainer.scrollWidth - activeContainer.clientWidth);
-        var rawTarget = startScrollLeft - dxTotal;
-        targetScrollLeft = Math.max(0, Math.min(maxScroll, rawTarget));
+        var offsetFromAnchor = e.clientX - anchorX;
+        if (Math.abs(offsetFromAnchor) > LEASH_DEADZONE) {
+            var effectiveDelta = offsetFromAnchor > 0
+                ? (offsetFromAnchor - LEASH_DEADZONE)
+                : (offsetFromAnchor + LEASH_DEADZONE);
+
+            anchorX += effectiveDelta;
+            var maxScroll = Math.max(0, activeContainer.scrollWidth - activeContainer.clientWidth);
+            targetScrollLeft = Math.max(0, Math.min(maxScroll, targetScrollLeft - effectiveDelta));
+        }
 
         var instantVel = ((dx * THROW_SPEED) / dt) * 16;
         velocity = velocity * 0.45 + instantVel * 0.55;
@@ -6145,29 +6193,29 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         lastTime = now;
     }, { capture: true, passive: false });
 
-    document.addEventListener('mouseup', function() {
+    window.addEventListener('mouseup', function(e) {
         if (!isDown) return;
+        if (hasDragged) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+        }
         releaseDrag();
     }, true);
 
-    document.addEventListener('dragstart', function(e) {
+    window.addEventListener('click', function(e) {
+        if (blockClickAfterDrag) {
+            blockClickAfterDrag = false;
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        }
+    }, true);
+
+    window.addEventListener('dragstart', function(e) {
         if (e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced')) {
             e.preventDefault();
         }
     }, true);
 
-    document.addEventListener('click', function(e) {
-        if (blockClickOnce) {
-            blockClickOnce = false;
-            var container = e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced');
-            if (container) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-            }
-        }
-    }, true);
-
     window.addEventListener('blur', releaseDrag);
-    document.addEventListener('mouseleave', releaseDrag);
 })();
