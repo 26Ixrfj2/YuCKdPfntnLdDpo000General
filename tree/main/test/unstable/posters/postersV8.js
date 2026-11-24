@@ -5973,8 +5973,8 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 // ==UserScript==
 // @name         Anime 365 Moments 1:1 Grab Sync
 // @namespace    http://tampermonkey.net
-// @version      2.6
-// @description  Убрана открытая ладошка (нет мигания между ладошкой и пальцем), мёртвая зона 12px, укороченный поводок 0.36 и запрет открытия видео после кулачка
+// @version      2.7
+// @description  Полное удаление открытой ладошки (grab) с приоритетным переопределением CSS, мёртвая зона 12px, укороченный поводок 0.36 и запрет открытия видео после кулачка
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        none
@@ -5990,21 +5990,44 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
     var DRAG_THRESHOLD = 7;      // Начальный сдвиг для мгновенного включения кулачка
     var HOLD_DELAY_MS = 110;     // Время удержания кнопки (мс), после которого включается кулачок даже без движения
 
-    if (!document.getElementById('cr-moments-1to1-drag-style')) {
-        var st = document.createElement('style');
-        st.id = 'cr-moments-1to1-drag-style';
-        st.textContent =
-            /* Убираем открытую ладошку (grab) с неактивных участков ленты, чтобы курсор не мигал */
-            '#yw_moments_by_series.cr-moments-enhanced {' +
-            '  cursor: default !important;' +
-            '}' +
-            /* Кулачок (grabbing) горит только во время реального захвата/перетаскивания */
-            '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag,' +
-            '#yw_moments_by_series.cr-moments-enhanced.cr-real-drag * {' +
-            '  cursor: grabbing !important;' +
-            '}';
-        (document.head || document.documentElement).appendChild(st);
+    function ensureCursorOverrideStyle() {
+        var styleId = 'cr-moments-1to1-drag-style-v27';
+        var st = document.getElementById(styleId);
+        if (!st) {
+            st = document.createElement('style');
+            st.id = styleId;
+            st.textContent =
+                /* Убираем открытую ладошку (grab) с ленты и всех неактивных блоков внутри карточек */
+                'html body #yw_moments_by_series.cr-moments-enhanced,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .cr-moment-card-item,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .cr-m-card-body,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .cr-m-bottom-box,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .m-moment__details,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .m-moment__episode {' +
+                '  cursor: default !important;' +
+                '}' +
+                /* На активных ссылках и превью оставляем палец (pointer) в покое */
+                'html body #yw_moments_by_series.cr-moments-enhanced a,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced a * {' +
+                '  cursor: pointer !important;' +
+                '}' +
+                /* Кулачок (grabbing) горит строго только во время реального захвата/перетаскивания */
+                'html body #yw_moments_by_series.cr-moments-enhanced.cr-real-drag,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced.cr-real-drag * {' +
+                '  cursor: grabbing !important;' +
+                '}';
+        }
+        var targetHead = document.head || document.documentElement;
+        if (targetHead && targetHead.lastElementChild !== st) {
+            targetHead.appendChild(st);
+        }
     }
+
+    ensureCursorOverrideStyle();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ensureCursorOverrideStyle);
+    }
+    window.addEventListener('load', ensureCursorOverrideStyle);
 
     var isDown = false;
     var hasDragged = false;
@@ -6116,6 +6139,7 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         var container = e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced');
         if (!container) return;
 
+        ensureCursorOverrideStyle();
         var wasRolling = Math.abs(velocity) > 0.35;
         stopLoop();
         clearHoldTimer();
