@@ -2972,6 +2972,50 @@ setInterval(syncFranchiseUI, 400);
 
     setInterval(syncFranchiseCleaner, 450);
 })();
+(function() {
+    'use strict';
+
+    var HIDE_ATTR = 'data-cr-cleaner-hidden';
+
+    function hideOldLinksBlock() {
+        var posterHost = document.getElementById('cr-poster-host');
+        var franchiseSection = document.getElementById('cr-franchise-episodes-section');
+        if (!posterHost || !franchiseSection) return;
+
+        document.querySelectorAll('ul.m-catalog-view-links').forEach(function(ul) {
+            if (ul.closest('#cr-poster-host') || ul.closest('#cr-franchise-episodes-section')) return;
+
+            ul.setAttribute(HIDE_ATTR, '1');
+
+            var prev = ul.previousElementSibling;
+            if (prev && /ссылки/i.test((prev.textContent || '').trim())) {
+                prev.setAttribute(HIDE_ATTR, '1');
+            }
+
+            var cardContent = ul.closest('.card-content');
+            if (cardContent) {
+                var visibleChildren = Array.from(cardContent.children).filter(function(ch) {
+                    return ch.getAttribute(HIDE_ATTR) !== '1' && ch.tagName !== 'SCRIPT' && ch.tagName !== 'STYLE';
+                });
+                if (visibleChildren.length === 0) {
+                    cardContent.setAttribute(HIDE_ATTR, '1');
+                }
+            }
+
+            var card = ul.closest('.card');
+            if (card && !card.querySelector('#comments')) {
+                var visibleCardBlocks = Array.from(card.children).filter(function(ch) {
+                    return ch.getAttribute(HIDE_ATTR) !== '1' && ch.tagName !== 'SCRIPT' && ch.tagName !== 'STYLE';
+                });
+                if (visibleCardBlocks.length === 0) {
+                    card.setAttribute(HIDE_ATTR, '1');
+                }
+            }
+        });
+    }
+
+    setInterval(hideOldLinksBlock, 450);
+})();
 
 
 // ==UserScript==
@@ -4028,4 +4072,1892 @@ setInterval(syncFranchiseLinks, 450);
     });
 
     setInterval(injectMetaLinks, 450);
+})();
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Franchise Community
+// @namespace    http://tampermonkey.net
+// @version      1.2
+// @description  Выравнивает нижние блоки по базовой геометрии секции серий (отступы 4.9% слева и справа) независимо от активной вкладки
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var STYLE_ID = 'cr-franchise-community-base-geometry';
+
+    function getAnimeId() {
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var segments = path.split('/').filter(Boolean);
+        if (segments.length !== 2 || segments.at(0) !== 'catalog') return null;
+        var slug = segments.at(1);
+        var dashIdx = slug.lastIndexOf('-');
+        if (dashIdx === -1) return null;
+        var id = slug.slice(dashIdx + 1);
+        return /^\d+$/.test(id) ? id : null;
+    }
+
+    function ensureBaseStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+        var st = document.createElement('style');
+        st.id = STYLE_ID;
+        st.textContent =
+            /* Базовая геометрия идентична #cr-franchise-episodes-section и #cr-poster-host (padding: 0 4.9%) */
+            '.cr-community-base-wrap {' +
+            '  width: 100% !important;' +
+            '  max-width: 100% !important;' +
+            '  padding-left: 4.9% !important;' +
+            '  padding-right: 4.9% !important;' +
+            '  margin-left: 0 !important;' +
+            '  margin-right: 0 !important;' +
+            '  box-sizing: border-box !important;' +
+            '  float: none !important;' +
+            '  clear: both !important;' +
+            '}' +
+            '.cr-community-base-wrap .row,' +
+            '.cr-community-base-wrap .container {' +
+            '  width: 100% !important;' +
+            '  max-width: 100% !important;' +
+            '  margin-left: 0 !important;' +
+            '  margin-right: 0 !important;' +
+            '  padding-left: 0 !important;' +
+            '  padding-right: 0 !important;' +
+            '}' +
+            '.cr-community-base-wrap .col {' +
+            '  width: 100% !important;' +
+            '  max-width: 100% !important;' +
+            '  flex: 0 0 100% !important;' +
+            '  margin-left: 0 !important;' +
+            '  margin-right: 0 !important;' +
+            '  padding-left: 0 !important;' +
+            '  padding-right: 0 !important;' +
+            '  float: none !important;' +
+            '}';
+        document.head.appendChild(st);
+    }
+
+    function applyBaseGeometryToLowerBlocks() {
+        var animeId = getAnimeId();
+        var section = document.getElementById('cr-franchise-episodes-section');
+        if (!animeId || !section) return;
+
+        ensureBaseStyles();
+
+        var sectionTop = section.getBoundingClientRect().top + window.scrollY;
+
+        // Находим верхнеуровневые контейнеры ниже секции серий/вкладок
+        var targets = Array.from(document.querySelectorAll(
+            'main > .container, main > .row, .m-catalog-view, #comments, .m-comments, footer.page-footer .footer-copyright'
+        ));
+
+        targets.forEach(function(el) {
+            if (el.getAttribute('data-cr-cleaner-hidden') === '1') return;
+            if (window.getComputedStyle(el).display === 'none') return;
+            if (el.id === 'cr-poster-host' || el.id === 'cr-franchise-episodes-section') return;
+            if (el.closest('#cr-poster-host') || el.closest('#cr-franchise-episodes-section')) return;
+
+            // Если родитель уже получил базовую обёртку 4.9%, не дублируем отступы на вложенных блоках
+            if (el.parentElement && el.parentElement.closest('.cr-community-base-wrap')) return;
+
+            var elTop = el.getBoundingClientRect().top + window.scrollY;
+            if (elTop >= sectionTop) {
+                el.classList.add('cr-community-base-wrap');
+            }
+        });
+    }
+
+    window.addEventListener('popstate', function() {
+        setTimeout(applyBaseGeometryToLowerBlocks, 350);
+    });
+
+    setInterval(applyBaseGeometryToLowerBlocks, 400);
+})();
+
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Top Navbar
+// @namespace    http://tampermonkey.net
+// @version      2.7
+// @description  Верхняя панель Crunchyroll (#23252b): выравнивание nav по левой и правой границам #cr-info-col (4.9%), возврат исходных отступов #cr-info-col
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var STYLE_ID = 'cr-top-navbar-style-v2-7';
+    var LOGO_STORAGE_KEY = 'cr_nav_logo_dataurl_v1';
+    var INFO_ICON_STORAGE_KEY = 'cr_nav_info_svg_dataurl_v1';
+    var AVATAR_STORAGE_KEY = 'cr_nav_user_avatar_url_v1';
+
+    var USER = 'Ruroll';
+    var REPO = 'WB35RWQwFRFijt000IMG';
+    var PROTO = 'https' + '://';
+
+    var LOGO_URLS = [
+        PROTO + 'raw' + '.githubusercontent' + '.com/' + USER + '/' + REPO + '/main/General/Logo/Logo.png',
+        PROTO + 'cdn' + '.statically' + '.io/gh/' + USER + '/' + REPO + '/main/General/Logo/Logo.png'
+    ];
+
+    var INFO_SVG_URLS = [
+        PROTO + 'raw' + '.githubusercontent' + '.com/' + USER + '/' + REPO + '/main/General/Logo/Info.svg',
+        PROTO + 'cdn' + '.statically' + '.io/gh/' + USER + '/' + REPO + '/main/General/Logo/Info.svg'
+    ];
+
+    var memoryLogoDataUrl = null;
+    var isLogoLoading = false;
+    var memoryInfoDataUrl = null;
+    var isInfoLoading = false;
+
+    var activeRequestsCount = 0;
+    var loaderHideTimer = null;
+
+    function restoreBannerInfoMargins() {
+        var host = document.getElementById('cr-poster-host');
+        if (!host || !host.shadowRoot) return;
+        var oldStyle = host.shadowRoot.getElementById('cr-info-col-margin-style-v2-6');
+        if (oldStyle) oldStyle.remove();
+    }
+
+    function injectNavbarStyles() {
+        var st = document.getElementById(STYLE_ID);
+        if (!st) {
+            st = document.createElement('style');
+            st.id = STYLE_ID;
+            st.textContent =
+                /* 1. Строгая высота 64px и выравнивание левой/правой границ nav ровно по #cr-info-col (4.9%) */
+                'body > nav,' +
+                'body > nav.white,' +
+                'nav[role="navigation"] {' +
+                '  position: relative !important;' +
+                '  background: #23252b !important;' +
+                '  background-color: #23252b !important;' +
+                '  color: #eeeeee !important;' +
+                '  height: 64px !important;' +
+                '  min-height: 64px !important;' +
+                '  max-height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  margin: 0 !important;' +
+                '  padding: 0 !important;' +
+                '  border: none !important;' +
+                '  border-bottom: none !important;' +
+                '  box-shadow: none !important;' +
+                '  text-shadow: none !important;' +
+                '  overflow: visible !important;' +
+                '}' +
+                'body > nav .nav-wrapper,' +
+                'body > nav .nav-wrapper.container {' +
+                '  width: 100% !important;' +
+                '  max-width: 100% !important;' +
+                '  height: 64px !important;' +
+                '  max-height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  margin: 0 !important;' +
+                '  padding-left: 4.9% !important;' +
+                '  padding-right: 4.9% !important;' +
+                '  box-sizing: border-box !important;' +
+                '}' +
+
+                /* 2. Полное скрытие кнопки меню (a.button-collapse) при любых условиях */
+                'body > nav a.button-collapse,' +
+                'body > nav:hover a.button-collapse {' +
+                '  display: none !important;' +
+                '  visibility: hidden !important;' +
+                '  opacity: 0 !important;' +
+                '  pointer-events: none !important;' +
+                '  width: 0 !important;' +
+                '  height: 0 !important;' +
+                '  overflow: hidden !important;' +
+                '}' +
+
+                /* 3. Логотип ровно по левой границе #cr-info-col и горит подсветкой ВСЕГДА */
+                'body > nav a#logo-container.brand-logo {' +
+                '  min-width: 170px !important;' +
+                '  width: auto !important;' +
+                '  height: 64px !important;' +
+                '  max-height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  padding: 0 !important;' +
+                '  margin: 0 !important;' +
+                '  background: transparent !important;' +
+                '  background-image: none !important;' +
+                '  display: inline-flex !important;' +
+                '  align-items: center !important;' +
+                '  justify-content: flex-start !important;' +
+                '  overflow: visible !important;' +
+                '}' +
+                'body > nav a#logo-container.brand-logo > span {' +
+                '  display: none !important;' +
+                '}' +
+                'body > nav a#logo-container.brand-logo img.cr-nav-custom-logo {' +
+                '  display: block !important;' +
+                '  height: 62px !important;' +
+                '  max-height: 64px !important;' +
+                '  width: auto !important;' +
+                '  max-width: none !important;' +
+                '  object-fit: contain !important;' +
+                '  object-position: left center !important;' +
+                '  transform: scale(1.85) !important;' +
+                '  transform-origin: left center !important;' +
+                '  filter: brightness(0) invert(1) drop-shadow(0 0 6px rgba(255, 255, 255, 0.9)) drop-shadow(0 0 12px rgba(255, 255, 255, 0.55)) !important;' +
+                '  transition: filter 0.25s ease-in-out !important;' +
+                '}' +
+                'body > nav a#logo-container.brand-logo:hover img.cr-nav-custom-logo {' +
+                '  filter: brightness(0) invert(1) drop-shadow(0 0 8px rgba(255, 255, 255, 1)) drop-shadow(0 0 16px rgba(255, 255, 255, 0.85)) !important;' +
+                '}' +
+
+                /* 4. Пункты меню в линию 64px */
+                'body > nav ul.right {' +
+                '  height: 64px !important;' +
+                '  max-height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  margin: 0 !important;' +
+                '  padding: 0 !important;' +
+                '  background-color: transparent !important;' +
+                '  border: none !important;' +
+                '  box-shadow: none !important;' +
+                '}' +
+                'body > nav ul.right > li {' +
+                '  position: relative !important;' +
+                '  height: 64px !important;' +
+                '  max-height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  margin: 0 !important;' +
+                '  padding: 0 !important;' +
+                '  background-color: transparent !important;' +
+                '  border: none !important;' +
+                '  box-shadow: none !important;' +
+                '}' +
+                'body > nav ul.right > li > a {' +
+                '  height: 64px !important;' +
+                '  max-height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  padding-top: 0 !important;' +
+                '  padding-bottom: 0 !important;' +
+                '  display: inline-flex !important;' +
+                '  align-items: center !important;' +
+                '  vertical-align: top !important;' +
+                '  color: #eeeeee !important;' +
+                '  font-weight: normal !important;' +
+                '  text-decoration: none !important;' +
+                '  text-shadow: none !important;' +
+                '  filter: none !important;' +
+                '  box-shadow: none !important;' +
+                '  background: transparent !important;' +
+                '  background-image: none !important;' +
+                '  transition: all 0.25s ease-in-out !important;' +
+                '}' +
+                'body > nav ul.right > li > a:hover,' +
+                'body > nav ul.right > li.active > a,' +
+                'body > nav ul.right > li:hover > a.dropdown-button,' +
+                'body > nav ul.right > li > a.dropdown-button.active {' +
+                '  color: #ffffff !important;' +
+                '  background-color: transparent !important;' +
+                '  text-shadow: 0 0 6px rgba(255, 255, 255, 1), 0 0 12px rgba(255, 255, 255, 0.8) !important;' +
+                '  box-shadow: none !important;' +
+                '}' +
+
+                /* Иконки в пунктах меню */
+                'body > nav ul.right > li > a i.material-icons,' +
+                'body > nav ul.right > li > a i.grey-text,' +
+                'body > nav ul.right > li > a i.green-text {' +
+                '  height: 64px !important;' +
+                '  line-height: 64px !important;' +
+                '  color: #eeeeee !important;' +
+                '  opacity: 0.55 !important;' +
+                '  text-shadow: none !important;' +
+                '  filter: none !important;' +
+                '  transition: all 0.25s ease-in-out !important;' +
+                '}' +
+                'body > nav ul.right > li:hover > a i.material-icons,' +
+                'body > nav ul.right > li:hover > a i.grey-text,' +
+                'body > nav ul.right > li > a.dropdown-button.active i.material-icons,' +
+                'body > nav ul.right > li.active > a i.material-icons {' +
+                '  color: #ffffff !important;' +
+                '  opacity: 1 !important;' +
+                '  text-shadow: none !important;' +
+                '}' +
+
+                /* 5. Кнопки-иконки «О проэкте» (Info.svg) и «Уведомления» + тултипы */
+                'body > nav li.cr-nav-icon-item > a {' +
+'  position: relative !important;' +
+'  padding: 0 12px !important;' +
+'  justify-content: center !important;' +
+'}' +
+'body > nav li.cr-nav-icon-item > a i.material-icons {' +
+'  margin: 0 !important;' +
+'  float: none !important;' +
+'}' +
+'img.cr-nav-info-img {' +
+'  width: 21px !important;' +
+'  height: 21px !important;' +
+'  min-width: 21px !important;' +
+'  min-height: 21px !important;' +
+'  display: block !important;' +
+'  object-fit: contain !important;' +
+'  filter: brightness(0) invert(1) !important;' +
+'  opacity: 0.55 !important;' +
+'  transition: opacity 0.25s ease-in-out !important;' +
+'}' +
+'body > nav li.cr-nav-icon-item:hover img.cr-nav-info-img,' +
+'body > nav li.cr-nav-icon-item.active img.cr-nav-info-img {' +
+'  opacity: 1 !important;' +
+'}' +
+'.cr-nav-icon-tooltip {' +
+'  position: absolute !important;' +
+'  top: calc(100% + 7px) !important;' +
+'  left: 50% !important;' +
+'  transform: translateX(-50%) !important;' +
+'  background-color: #23252b !important;' +
+'  color: #ffffff !important;' +
+'  font-size: 13px !important;' +
+'  font-weight: 500 !important;' +
+'  line-height: 1.2 !important;' +
+'  padding: 8px 13px !important;' +
+'  border: none !important;' +
+'  border-radius: 0 !important;' +
+'  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.85) !important;' +
+'  white-space: nowrap !important;' +
+'  text-shadow: none !important;' +
+'  filter: none !important;' +
+'  pointer-events: none !important;' +
+'  opacity: 0;' +
+'  visibility: hidden;' +
+'  transition: opacity 0.16s ease !important;' +
+'  z-index: 2147483645 !important;' +
+'}' +
+'.cr-nav-icon-tooltip::before {' +
+'  content: "" !important;' +
+'  position: absolute !important;' +
+'  bottom: 100% !important;' +
+'  left: 50% !important;' +
+'  transform: translateX(-50%) !important;' +
+'  border-width: 0 7px 7px 7px !important;' +
+'  border-style: solid !important;' +
+'  border-color: transparent transparent #23252b transparent !important;' +
+'}' +
+'body > nav li.cr-nav-icon-item:hover .cr-nav-icon-tooltip {' +
+'  opacity: 1 !important;' +
+'  visibility: visible !important;' +
+'}' +
+/* 6. Профиль пользователя: выровнен по правой границе #cr-info-col, аватар 36x36 + имя без сдвига */
+'body > nav ul.right > li > a[data-activates="top-dropdown2"] {' +
+'  min-width: auto !important;' +
+'  padding: 0 0 0 12px !important;' +
+'  display: inline-flex !important;' +
+'  align-items: center !important;' +
+'}' +
+'.cr-nav-user-avatar {' +
+'  width: 36px !important;' +
+'  height: 36px !important;' +
+'  border-radius: 50% !important;' +
+'  object-fit: cover !important;' +
+'  display: inline-block !important;' +
+'  flex-shrink: 0 !important;' +
+'  border: none !important;' +
+'  box-shadow: none !important;' +
+'}' +
+'.cr-nav-username-text {' +
+'  display: inline-block !important;' +
+'  margin-left: 9px !important;' +
+'  white-space: nowrap !important;' +
+'  opacity: 0 !important;' +
+'  color: #ffffff !important;' +
+'  text-shadow: none !important;' +
+'  transition: opacity 0.22s ease, text-shadow 0.2s ease !important;' +
+'}' +
+'body > nav:hover .cr-nav-username-text,' +
+'body > nav ul.right > li > a[data-activates="top-dropdown2"].active .cr-nav-username-text {' +
+'  opacity: 1 !important;' +
+'  color: #ffffff !important;' +
+'  text-shadow: none !important;' +
+'}' +
+'body > nav ul.right > li:hover > a[data-activates="top-dropdown2"] .cr-nav-username-text,' +
+'body > nav ul.right > li > a[data-activates="top-dropdown2"]:hover .cr-nav-username-text,' +
+'body > nav ul.right > li > a[data-activates="top-dropdown2"].active .cr-nav-username-text {' +
+'  opacity: 1 !important;' +
+'  color: #ffffff !important;' +
+'  text-shadow: 0 0 6px rgba(255, 255, 255, 1), 0 0 12px rgba(255, 255, 255, 0.85) !important;' +
+'}' +
+//* 7. Раскрывающиеся дропдауны шириной 180px /
+'ul#top-dropdown1.dropdown-content,' +
+'ul#top-dropdown2.dropdown-content,' +
+'body > nav ul.dropdown-content,' +
+'.dropdown-content[id="top-dropdown"] {' +
+'  background-color: #23252b !important;' +
+'  background: #23252b !important;' +
+'  min-width: 180px !important;' +
+'  width: 180px !important;' +
+'  border: none !important;' +
+'  border-radius: 0 !important;' +
+'  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.85) !important;' +
+'  padding: 0 !important;' +
+'  margin: 0 !important;' +
+'  overflow: hidden !important;' +
+'}' +
+'ul#top-dropdown1.dropdown-content li,' +
+'ul#top-dropdown2.dropdown-content li,' +
+'.dropdown-content[id*="top-dropdown"] li {' +
+'  background-color: transparent !important;' +
+'  background: transparent !important;' +
+'  border: none !important;' +
+'  min-height: auto !important;' +
+'  height: auto !important;' +
+'  line-height: normal !important;' +
+'  padding: 0 !important;' +
+'  margin: 0 !important;' +
+'  width: 100% !important;' +
+'}' +
+'ul#top-dropdown1.dropdown-content li > a,' +
+'ul#top-dropdown2.dropdown-content li > a,' +
+'.dropdown-content[id*="top-dropdown"] li > a {' +
+'  color: #eeeeee !important;' +
+'  background-color: transparent !important;' +
+'  background: transparent !important;' +
+'  background-image: none !important;' +
+'  font-size: 14px !important;' +
+'  font-weight: normal !important;' +
+'  text-shadow: none !important;' +
+'  border: none !important;' +
+'  box-shadow: none !important;' +
+'  display: block !important;' +
+'  width: 100% !important;' +
+'  box-sizing: border-box !important;' +
+'  padding: 13px 16px !important;' +
+'  line-height: 22px !important;' +
+'  white-space: nowrap !important;' +
+'  transition: all 0.2s ease-in-out !important;' +
+'}' +
+'ul#top-dropdown1.dropdown-content li > a:hover,' +
+'ul#top-dropdown1.dropdown-content li:hover > a,' +
+'ul#top-dropdown2.dropdown-content li > a:hover,' +
+'ul#top-dropdown2.dropdown-content li:hover > a,' +
+'.dropdown-content[id*="top-dropdown"] li > a:hover,' +
+'.dropdown-content[id*="top-dropdown"] li:hover > a {' +
+'  background-color: transparent !important;' +
+'  background: transparent !important;' +
+'  color: #ffffff !important;' +
+'  text-shadow: 0 0 6px rgba(255, 255, 255, 1), 0 0 12px rgba(255, 255, 255, 0.75) !important;' +
+'}' +
+//* 8. Полоска загрузки (#cr-global-wave-loader) /
+'.progress, div.progress, [class="progress"] {' +
+'  display: none !important;' +
+'  opacity: 0 !important;' +
+'  height: 0 !important;' +
+'}' +
+'#cr-global-wave-loader {' +
+'  position: fixed !important;' +
+'  top: 0 !important;' +
+'  left: 0 !important;' +
+'  width: 100vw !important;' +
+'  height: 4px !important;' +
+'  z-index: 2147483647 !important;' +
+'  background-color: #23252b !important;' +
+'  background-image: linear-gradient(to right, transparent 0%, rgba(255, 255, 255, 0.4) 25%, #ffffff 50%, rgba(255, 255, 255, 0.4) 75%, transparent 100%) !important;' +
+'  background-size: 200% 100% !important;' +
+'  box-shadow: 0 1px 12px rgba(255, 255, 255, 1), 0 0 25px rgba(255, 255, 255, 0.7) !important;' +
+'  animation: crLinearWave 1.4s infinite linear !important;' +
+'  transition: opacity 0.4s ease-in-out, transform 0.35s ease !important;' +
+'  pointer-events: none !important;' +
+'  opacity: 1;' +
+'  transform: translateY(0);' +
+'}' +
+'@keyframes crLinearWave {' +
+'  0% { background-position: 200% 0; }' +
+'  100% { background-position: -200% 0; }' +
+'}' +
+'#cr-global-wave-loader.cr-hide {' +
+'  opacity: 0 !important;' +
+'  transform: translateY(-4px) !important;' +
+'}';
+document.head.appendChild(st);
+} else if (document.head.lastElementChild !== st) {
+document.head.appendChild(st);
+}
+}
+function showWaveLoader(autoHideMs) {
+if (!document.body) return;
+var loader = document.getElementById('cr-global-wave-loader');
+if (!loader) {
+loader = document.createElement('div');
+loader.id = 'cr-global-wave-loader';
+document.body.appendChild(loader);
+}
+if (loaderHideTimer) clearTimeout(loaderHideTimer);
+loader.classList.remove('cr-hide');
+if (autoHideMs) {
+loaderHideTimer = setTimeout(function() {
+if (activeRequestsCount <= 0) {
+var l = document.getElementById('cr-global-wave-loader');
+if (l) l.classList.add('cr-hide');
+}
+}, autoHideMs);
+}
+}
+function hideWaveLoaderDelayed(delayMs) {
+if (loaderHideTimer) clearTimeout(loaderHideTimer);
+loaderHideTimer = setTimeout(function() {
+if (activeRequestsCount <= 0) {
+var l = document.getElementById('cr-global-wave-loader');
+if (l) l.classList.add('cr-hide');
+}
+}, delayMs || 450);
+}
+function bindGlobalLoadingHooks() {
+if (window.__crWaveLoaderHooksBound) return;
+window.__crWaveLoaderHooksBound = true;
+showWaveLoader(850);
+var origPush = history.pushState;
+history.pushState = function() {
+showWaveLoader(750);
+return origPush.apply(this, arguments);
+};
+var origReplace = history.replaceState;
+history.replaceState = function() {
+showWaveLoader(650);
+return origReplace.apply(this, arguments);
+};
+window.addEventListener('popstate', function() {
+showWaveLoader(750);
+});
+document.addEventListener('click', function(e) {
+var link = e.target.closest('a[href]');
+if (!link) return;
+var href = link.getAttribute('href') || '';
+if (href.charAt(0) === '#' || link.target === '_blank') return;
+showWaveLoader(1200);
+}, true);
+if (typeof window.fetch === 'function') {
+var origFetch = window.fetch;
+window.fetch = function() {
+activeRequestsCount++;
+showWaveLoader(0);
+return origFetch.apply(this, arguments).then(function(res) {
+activeRequestsCount = Math.max(0, activeRequestsCount - 1);
+if (activeRequestsCount === 0) hideWaveLoaderDelayed(400);
+return res;
+}, function(err) {
+activeRequestsCount = Math.max(0, activeRequestsCount - 1);
+if (activeRequestsCount === 0) hideWaveLoaderDelayed(400);
+throw err;
+});
+};
+}
+var origXhrOpen = XMLHttpRequest.prototype.open;
+var origXhrSend = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.open = function() {
+this.__crTrackLoad = true;
+return origXhrOpen.apply(this, arguments);
+};
+XMLHttpRequest.prototype.send = function() {
+if (this.__crTrackLoad) {
+activeRequestsCount++;
+showWaveLoader(0);
+this.addEventListener('loadend', function() {
+activeRequestsCount = Math.max(0, activeRequestsCount - 1);
+if (activeRequestsCount === 0) hideWaveLoaderDelayed(400);
+});
+}
+return origXhrSend.apply(this, arguments);
+};
+}
+function detectAuthorizedUserAvatarUrl() {
+var commentCircle = document.querySelector('.m-comment-new .circle[style*="background-image"], .m-comment-new .circle');
+if (commentCircle) {
+var bg = commentCircle.style.backgroundImage || window.getComputedStyle(commentCircle).backgroundImage || '';
+var m = bg.match(/url\(["']?([^"')]+)["']?\)/i);
+if (m && m.at(1) && m.at(1) !== 'none') {
+try { localStorage.setItem(AVATAR_STORAGE_KEY, m.at(1)); } catch (e) {}
+return m.at(1);
+}
+}
+var profileImg = document.querySelector('body > div.body-container .col.s12.m4.l3.col-even .card-image img');
+if (profileImg && profileImg.src && profileImg.src.indexOf('/users/avatars/') !== -1) {
+try { localStorage.setItem(AVATAR_STORAGE_KEY, profileImg.src); } catch (e) {}
+return profileImg.src;
+}
+try {
+var saved = localStorage.getItem(AVATAR_STORAGE_KEY);
+if (saved) return saved;
+} catch (e) {}
+return null;
+}
+function forceDropdownWidth(dropdownEl) {
+if (!dropdownEl) return;
+dropdownEl.style.setProperty('width', '180px', 'important');
+dropdownEl.style.setProperty('min-width', '180px', 'important');
+dropdownEl.style.setProperty('background-color', '#23252b', 'important');
+}
+function blobToDataUrl(blob) {
+return new Promise(function(resolve) {
+var reader = new FileReader();
+reader.onloadend = function() { resolve(reader.result || null); };
+reader.onerror = function() { resolve(null); };
+reader.readAsDataURL(blob);
+});
+}
+function fetchAssetDataUrl(urls, storageKey, isMemoryLogo) {
+if (isMemoryLogo && memoryLogoDataUrl) return Promise.resolve(memoryLogoDataUrl);
+if (!isMemoryLogo && memoryInfoDataUrl) return Promise.resolve(memoryInfoDataUrl);
+try {
+var saved = localStorage.getItem(storageKey);
+if (saved && saved.indexOf('data:image/') === 0) {
+if (isMemoryLogo) memoryLogoDataUrl = saved;
+else memoryInfoDataUrl = saved;
+return Promise.resolve(saved);
+}
+} catch (e) {}
+if (isMemoryLogo && isLogoLoading) return Promise.resolve(null);
+if (!isMemoryLogo && isInfoLoading) return Promise.resolve(null);
+if (isMemoryLogo) isLogoLoading = true;
+else isInfoLoading = true;
+return new Promise(function(resolve) {
+var idx = 0;
+function tryNext() {
+if (idx >= urls.length) {
+if (isMemoryLogo) isLogoLoading = false;
+else isInfoLoading = false;
+resolve(null);
+return;
+}
+var url = urls[idx++];
+GM_xmlhttpRequest({
+method: 'GET',
+url: url,
+responseType: 'blob',
+timeout: 15000,
+onload: function(res) {
+if (res.status === 200 && res.response && res.response.size > 50) {
+blobToDataUrl(res.response).then(function(dataUrl) {
+if (isMemoryLogo) isLogoLoading = false;
+else isInfoLoading = false;
+if (dataUrl) {
+if (!isMemoryLogo && dataUrl.indexOf('data:image/svg+xml') !== 0) {
+dataUrl = dataUrl.replace(/^data:[^;]+;/, 'data:image/svg+xml;');
+}
+if (isMemoryLogo) memoryLogoDataUrl = dataUrl;
+else memoryInfoDataUrl = dataUrl;
+try { localStorage.setItem(storageKey, dataUrl); } catch (e) {}
+}
+resolve(dataUrl);
+});
+} else {
+tryNext();
+}
+},
+onerror: tryNext,
+ontimeout: tryNext
+});
+}
+tryNext();
+});
+}
+function arrangeNavbarItems(nav) {
+var rightList = nav.querySelector('ul.right');
+if (!rightList) return;
+['top-dropdown1', 'top-dropdown2'].forEach(function(ddId) {
+var dd = document.getElementById(ddId) || nav.querySelector('#' + ddId);
+if (dd) {
+forceDropdownWidth(dd);
+if (!dd.getAttribute('data-cr-width-observed')) {
+dd.setAttribute('data-cr-width-observed', '1');
+var mo = new MutationObserver(function() {
+forceDropdownWidth(dd);
+});
+mo.observe(dd, { attributes: true, attributeFilter: ['style'] });
+}
+}
+});
+var catalogLink = rightList.querySelector('a[data-activates="top-dropdown1"]');
+var catalogLi = catalogLink ? catalogLink.closest('li') : null;
+var dropdown1 = document.getElementById('top-dropdown1') || (catalogLi && catalogLi.querySelector('#top-dropdown1'));
+var momentsLink = rightList.querySelector(':scope > li > a[href="/moments/index"]');
+var momentsLi = momentsLink ? momentsLink.closest('li') : null;
+var ongoingDropLink = dropdown1 ? dropdown1.querySelector('a[href="/ongoing"]') : null;
+var ongoingDropLi = ongoingDropLink ? ongoingDropLink.closest('li') : null;
+if (momentsLi && ongoingDropLi && dropdown1) {
+momentsLink.setAttribute('href', '/ongoing');
+momentsLink.textContent = 'Онгоинги';
+momentsLi.setAttribute('data-cr-swapped-ongoing', '1');
+ongoingDropLink.setAttribute('href', '/moments/index');
+ongoingDropLink.textContent = 'Моменты';
+ongoingDropLi.setAttribute('data-cr-swapped-moments', '1');
+}
+var aboutLink = rightList.querySelector('a[href="/about"]');
+var aboutLi = aboutLink ? aboutLink.closest('li') : null;
+if (aboutLink && aboutLi) {
+aboutLi.classList.add('cr-nav-icon-item');
+if (!aboutLink.querySelector('img.cr-nav-info-img')) {
+fetchAssetDataUrl(INFO_SVG_URLS, INFO_ICON_STORAGE_KEY, false).then(function(infoUrl) {
+if (!infoUrl) return;
+var curAbout = document.querySelector('body > nav ul.right a[href="/about"]');
+if (!curAbout || curAbout.querySelector('img.cr-nav-info-img')) return;
+curAbout.innerHTML = '';
+var img = document.createElement('img');
+img.className = 'cr-nav-info-img';
+img.alt = 'О проэкте';
+img.src = infoUrl;
+curAbout.appendChild(img);
+var tip = document.createElement('span');
+tip.className = 'cr-nav-icon-tooltip';
+tip.textContent = 'О проэкте';
+curAbout.appendChild(tip);
+});
+}
+}
+var notifLink = rightList.querySelector('a[href*="/notifications"]');
+var notifLi = notifLink ? notifLink.closest('li') : null;
+if (notifLink && notifLi) {
+notifLi.classList.add('cr-nav-icon-item');
+Array.from(notifLink.childNodes).forEach(function(node) {
+if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim().length > 0) {
+node.nodeValue = '';
+}
+});
+if (!notifLink.querySelector('.cr-nav-icon-tooltip')) {
+var tip = document.createElement('span');
+tip.className = 'cr-nav-icon-tooltip';
+tip.textContent = 'Уведомления';
+notifLink.appendChild(tip);
+}
+}
+var userLink = rightList.querySelector('a[data-activates="top-dropdown2"]');
+var userLi = userLink ? userLink.closest('li') : null;
+if (momentsLi && catalogLi && momentsLi.nextElementSibling !== catalogLi) {
+rightList.insertBefore(momentsLi, catalogLi);
+}
+if (catalogLi && aboutLi && catalogLi.nextElementSibling !== aboutLi) {
+rightList.insertBefore(catalogLi, aboutLi);
+}
+if (aboutLi && notifLi && aboutLi.nextElementSibling !== notifLi) {
+rightList.insertBefore(aboutLi, notifLi);
+}
+if (notifLi && userLi && notifLi.nextElementSibling !== userLi) {
+rightList.insertBefore(notifLi, userLi);
+}
+if (userLink) {
+var defaultIcon = userLink.querySelector('i.material-icons');
+var avatarUrl = detectAuthorizedUserAvatarUrl();
+if (!userLink.querySelector('.cr-nav-username-text')) {
+var rawName = '';
+Array.from(userLink.childNodes).forEach(function(node) {
+if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim().length > 0) {
+rawName += node.nodeValue.trim();
+node.nodeValue = '';
+}
+});
+if (rawName) {
+var nameSpan = document.createElement('span');
+nameSpan.className = 'cr-nav-username-text';
+nameSpan.textContent = rawName;
+userLink.appendChild(nameSpan);
+}
+}
+if (avatarUrl) {
+var avatarImg = userLink.querySelector('img.cr-nav-user-avatar');
+if (!avatarImg) {
+avatarImg = document.createElement('img');
+avatarImg.className = 'cr-nav-user-avatar';
+avatarImg.alt = '';
+userLink.insertBefore(avatarImg, userLink.firstChild);
+}
+if (avatarImg.src !== avatarUrl && avatarImg.getAttribute('src') !== avatarUrl) {
+avatarImg.src = avatarUrl;
+}
+if (defaultIcon) {
+defaultIcon.style.setProperty('display', 'none', 'important');
+}
+}
+}
+}
+function applyNavbarThemeAndLogo() {
+restoreBannerInfoMargins();
+var nav = document.querySelector('body > nav');
+if (!nav) return;
+injectNavbarStyles();
+bindGlobalLoadingHooks();
+arrangeNavbarItems(nav);
+if (typeof window.jQuery !== 'undefined' && !window.__crNavAjaxBound) {
+window.__crNavAjaxBound = true;
+window.jQuery(document).on('ajaxStart.crnav', function() {
+activeRequestsCount++;
+showWaveLoader(0);
+}).on('ajaxComplete.crnav', function() {
+activeRequestsCount = Math.max(0, activeRequestsCount - 1);
+if (activeRequestsCount === 0) hideWaveLoaderDelayed(400);
+});
+}
+var logoLink = nav.querySelector('a#logo-container.brand-logo');
+if (!logoLink) return;
+var existingImg = logoLink.querySelector('img.cr-nav-custom-logo');
+if (existingImg && existingImg.src) return;
+fetchAssetDataUrl(LOGO_URLS, LOGO_STORAGE_KEY, true).then(function(dataUrl) {
+if (!dataUrl) return;
+var currentLink = document.querySelector('body > nav a#logo-container.brand-logo');
+if (!currentLink || currentLink.querySelector('img.cr-nav-custom-logo')) return;
+var img = document.createElement('img');
+img.className = 'cr-nav-custom-logo';
+img.alt = 'Anime 365';
+img.src = dataUrl;
+currentLink.appendChild(img);
+});
+}
+applyNavbarThemeAndLogo();
+window.addEventListener('popstate', applyNavbarThemeAndLogo);
+setInterval(applyNavbarThemeAndLogo, 400);
+})();
+
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Moments
+// @namespace    http://tampermonkey.net
+// @version      7.1
+// @description  Блок моментов в стиле Crunchyroll: постоянный кэш моментов, свайп мышью по принципу левой/правой кнопок и единый размер карточек
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var STYLE_ID = 'cr-moments-section-style-v7-1';
+    var DATA_CACHE_PREFIX = 'cr_moments_clean_v7_';
+
+    function injectMomentsStyles() {
+        var st = document.getElementById(STYLE_ID);
+        if (!st) {
+            st = document.createElement('style');
+            st.id = STYLE_ID;
+            st.textContent = [
+                '.cr-moments-title-card, .cr-moments-title-card.card {',
+                '  width: 100% !important; max-width: 100% !important;',
+                '  margin: 28px 0 14px 0 !important; padding: 0 !important;',
+                '  box-sizing: border-box !important; background: transparent !important;',
+                '  box-shadow: none !important; border: none !important;',
+                '  position: relative !important; z-index: 15 !important;',
+                '}',
+                '.cr-moments-title-card > .card-content {',
+                '  background: transparent !important; padding: 0 !important;',
+                '  display: flex !important; align-items: center !important;',
+                '  justify-content: space-between !important; width: 100% !important; min-height: 36px !important;',
+                '}',
+                '.cr-moments-title-card .m-block-title__left { float: none !important; margin: 0 !important; }',
+                '.cr-moments-title-card .m-block-title__left h3 {',
+                '  margin: 0 !important; font-family: Lato, Roboto, Arial, sans-serif !important;',
+                '  font-size: 22px !important; font-weight: 700 !important; color: #ffffff !important; text-shadow: none !important;',
+                '}',
+                '.cr-moments-title-card .m-block-title__right {',
+                '  float: none !important; margin: 0 0 0 auto !important; display: flex !important;',
+                '  align-items: center !important; gap: 18px !important; position: relative !important;',
+                '}',
+                '.cr-moments-title-card .m-block-title__right a.btn, .cr-moments-options-btn {',
+                '  height: auto !important; line-height: 1.4 !important; padding: 4px 2px !important; margin: 0 !important;',
+                '  background: transparent !important; background-image: none !important; color: #b8bcc4 !important;',
+                '  font-family: Lato, Roboto, Arial, sans-serif !important; font-size: 13px !important; font-weight: 700 !important;',
+                '  text-transform: uppercase !important; letter-spacing: 0.5px !important;',
+                '  border: none !important; border-radius: 0 !important; box-shadow: none !important; text-shadow: none !important;',
+                '  cursor: pointer !important; display: inline-flex !important; align-items: center !important; gap: 5px !important;',
+                '  transition: color 0.18s ease, text-shadow 0.18s ease !important;',
+                '}',
+                '.cr-moments-title-card .m-block-title__right a.btn:hover, .cr-moments-options-btn:hover, .cr-moments-options-btn.cr-open {',
+                '  background: transparent !important; color: #ffffff !important; box-shadow: none !important;',
+                '  text-shadow: 0 0 6px rgba(255, 255, 255, 1), 0 0 12px rgba(255, 255, 255, 0.8) !important;',
+                '}',
+                '.cr-moments-options-menu {',
+                '  position: absolute !important; top: calc(100% + 8px) !important; right: 0 !important; left: auto !important;',
+                '  min-width: 215px !important; background-color: #23252b !important; border: none !important;',
+                '  border-radius: 0 !important; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.9) !important;',
+                '  z-index: 2147483000 !important; display: none !important; flex-direction: column !important; padding: 4px 0 !important;',
+                '}',
+                '.cr-moments-options-menu.cr-visible { display: flex !important; }',
+                '.cr-moments-opt-item {',
+                '  background: transparent !important; border: none !important; color: #dadada !important;',
+                '  font-family: Lato, Roboto, Arial, sans-serif !important; font-size: 13px !important;',
+                '  text-align: left !important; padding: 10px 16px !important; cursor: pointer !important;',
+                '  display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 10px !important;',
+                '  transition: color 0.16s ease, text-shadow 0.16s ease !important;',
+                '}',
+                '.cr-moments-opt-item:hover {',
+                '  background-color: transparent !important; color: #ffffff !important;',
+                '  text-shadow: 0 0 6px rgba(255, 255, 255, 1), 0 0 12px rgba(255, 255, 255, 0.75) !important;',
+                '}',
+                '.cr-moments-opt-item.cr-active { color: #f47521 !important; font-weight: 700 !important; }',
+                '.cr-moments-outer-wrap {',
+                '  position: relative !important; width: 100% !important; max-width: 100% !important;',
+                '  margin: 0 0 28px 0 !important; padding: 0 !important; overflow: hidden !important; box-sizing: border-box !important;',
+                '}',
+                '.cr-moments-loading-overlay {',
+                '  display: none !important; align-items: center !important; justify-content: center !important;',
+                '  min-height: 240px !important; width: 100% !important; color: #b8bcc4 !important;',
+                '  font-family: Lato, Roboto, Arial, sans-serif !important; font-size: 14px !important; letter-spacing: 0.4px !important;',
+                '}',
+                '.cr-moments-outer-wrap.cr-waiting-full-load .cr-moments-loading-overlay { display: flex !important; }',
+                '.cr-moments-outer-wrap.cr-waiting-full-load #yw_moments_by_series {',
+                '  visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; height: 240px !important;',
+                '}',
+                                '.cr-moments-nav-arrow {',
+                '  position: absolute !important; top: 0 !important; bottom: 0 !important; height: 100% !important; width: 54px !important;',
+                '  background: transparent !important; border: none !important; box-shadow: none !important;',
+                '  display: flex !important; align-items: center !important; justify-content: center !important;',
+                '  cursor: pointer !important; z-index: 30 !important; padding: 0 !important; margin: 0 !important;',
+                '  transition: opacity 0.18s ease !important;',
+                '}',
+                '.cr-moments-nav-arrow.cr-prev { left: 0 !important; }',
+                '.cr-moments-nav-arrow.cr-next { right: 0 !important; }',
+                '.cr-moments-nav-arrow.cr-disabled { opacity: 0 !important; pointer-events: none !important; }',
+                '.cr-moments-arrow-badge {',
+                '  width: 44px !important; height: 44px !important; border-radius: 50% !important;',
+                '  display: flex !important; align-items: center !important; justify-content: center !important;',
+                '  background: transparent !important; box-shadow: none !important; overflow: hidden !important;',
+                '  opacity: 0.85 !important;',
+                '  transition: transform 0.18s ease, opacity 0.18s ease, background 0.18s ease !important;',
+                '}',
+                '.cr-moments-chevron {',
+                '  width: 14px !important; height: 14px !important; display: block !important; box-sizing: border-box !important;',
+                '  border-top: 3px solid #ffffff !important; border-left: 3px solid #ffffff !important;',
+                '  background: transparent !important; pointer-events: none !important;',
+                '}',
+                '.cr-moments-nav-arrow.cr-prev .cr-moments-chevron { transform: translateX(3px) rotate(-45deg) !important; }',
+                '.cr-moments-nav-arrow.cr-next .cr-moments-chevron { transform: translateX(-3px) rotate(135deg) !important; }',
+                '.cr-moments-nav-arrow:hover .cr-moments-arrow-badge {',
+                '  opacity: 1 !important; transform: scale(1.1) !important;',
+                '  background: radial-gradient(circle, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.72) 58%, transparent 72%) !important;',
+                '  box-shadow: none !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced {',
+                '  display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;',
+                '  align-items: stretch !important; gap: 16px !important; width: 100% !important;',
+                '  padding: 0 0 8px 0 !important; margin: 0 !important; overflow-x: auto !important; overflow-y: hidden !important;',
+                '  scrollbar-width: none !important; -ms-overflow-style: none !important;',
+                '  cursor: grab !important; user-select: none !important; background: transparent !important; box-sizing: border-box !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced::-webkit-scrollbar { display: none !important; height: 0 !important; }',
+                '#yw_moments_by_series.cr-moments-enhanced.cr-dragging { cursor: grabbing !important; }',
+                '#yw_moments_by_series.cr-moments-enhanced .slick-arrow,',
+                '#yw_moments_by_series.cr-moments-enhanced .slick-dots,',
+                '#yw_moments_by_series.cr-moments-enhanced .keys,',
+                '#yw_moments_by_series.cr-moments-enhanced .page-anchor { display: none !important; }',
+                '#yw_moments_by_series.cr-moments-enhanced > .cr-moment-card-item {',
+                '  flex: 0 0 calc((100% - 56px) * 0.2222) !important;',
+                '  width: calc((100% - 56px) * 0.2222) !important;',
+                '  min-width: calc((100% - 56px) * 0.2222) !important;',
+                '  max-width: calc((100% - 56px) * 0.2222) !important;',
+                '  height: auto !important;',
+                '  margin: 0 !important; padding: 0 !important; float: none !important;',
+                '  display: flex !important; flex-direction: column !important; background: transparent !important; box-sizing: border-box !important;',
+                '  content-visibility: auto !important; contain-intrinsic-size: 320px 280px !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .cr-m-card-body {',
+                '  display: flex !important; flex-direction: column !important; width: 100% !important; height: 100% !important;',
+                '  margin: 0 !important; background-color: #18191e !important; background: #18191e !important;',
+                '  border: none !important; overflow: hidden !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .cr-m-top-box {',
+                '  position: relative !important; display: block !important; width: 100% !important;',
+                '  height: 0 !important; padding: 0 0 56.25% 0 !important; margin: 0 !important; flex-shrink: 0 !important;',
+                '  background: #101114 !important; overflow: hidden !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced a.m-moment__img {',
+                '  position: absolute !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;',
+                '  display: block !important; width: 100% !important; height: 100% !important; overflow: hidden !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__thumb {',
+                '  position: absolute !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;',
+                '  width: 100% !important; height: 100% !important;',
+                '  background-size: cover !important; background-position: center center !important; overflow: hidden !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__thumb img {',
+                '  position: absolute !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;',
+                '  width: 100% !important; height: 100% !important; min-width: 100% !important; max-width: 100% !important;',
+                '  min-height: 100% !important; max-height: 100% !important;',
+                '  object-fit: cover !important; display: block !important; opacity: 1 !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__duration {',
+                '  position: absolute !important; right: 8px !important; bottom: 8px !important; left: auto !important; top: auto !important;',
+                '  padding: 2px 7px !important; font-size: 11px !important; font-weight: 700 !important; line-height: 1.2 !important;',
+                '  background: rgba(0, 0, 0, 0.85) !important; color: #ffffff !important; z-index: 3 !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .cr-m-bottom-box {',
+                '  display: flex !important; flex-direction: column !important; flex: 1 1 auto !important;',
+                '  height: 100px !important; min-height: 100px !important; max-height: 100px !important;',
+                '  padding: 10px 12px 10px 12px !important; background-color: #18191e !important; background: #18191e !important;',
+                '  box-shadow: none !important; box-sizing: border-box !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__title-episode { display: flex !important; flex-direction: column !important; }',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__episode {',
+                '  display: block !important; visibility: visible !important; opacity: 1 !important; order: 1 !important;',
+                '  font-size: 11px !important; font-weight: 700 !important; letter-spacing: 0.4px !important; text-transform: uppercase !important;',
+                '  color: #9ea2aa !important; margin: 0 0 4px 0 !important; line-height: 1.2 !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__title { order: 2 !important; margin: 0 0 6px 0 !important; line-height: 1.28 !important; }',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__title a {',
+                '  font-family: Lato, Roboto, Arial, sans-serif !important; font-size: 14px !important; font-weight: 600 !important;',
+                '  color: #ffffff !important; text-decoration: none !important; display: -webkit-box !important;',
+                '  -webkit-line-clamp: 2 !important; -webkit-box-orient: vertical !important; overflow: hidden !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .cr-moment-card-item:hover .m-moment__title a { color: #f47521 !important; }',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__details {',
+                '  order: 3 !important; margin-top: auto !important; padding-top: 2px !important;',
+                '  display: flex !important; align-items: center !important; flex-wrap: nowrap !important; gap: 6px !important;',
+                '  font-size: 11px !important; color: #8f9299 !important; overflow: hidden !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__author_avatar {',
+                '  width: 18px !important; height: 18px !important; border-radius: 50% !important;',
+                '  background-size: cover !important; background-position: center !important; flex-shrink: 0 !important;',
+                '}',
+                '#yw_moments_by_series.cr-moments-enhanced .m-moment__author {',
+                '  white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; max-width: 45% !important;',
+'}',
+'#yw_moments_by_series.cr-moments-enhanced .m-moment__author a { color: #b0b3ba !important; font-size: 11px !important; text-decoration: none !important; }',
+'#yw_moments_by_series.cr-moments-enhanced .m-moment__author a:hover { color: #ffffff !important; }',
+'#yw_moments_by_series.cr-moments-enhanced .m-moment__meta {',
+'  margin-left: auto !important; display: flex !important; align-items: center !important; gap: 8px !important;',
+'  font-size: 11px !important; color: #8f9299 !important; white-space: nowrap !important;',
+'}',
+'#yw_moments_by_series.cr-moments-enhanced .m-clear-both { display: none !important; }'
+].join('\n');
+document.head.appendChild(st);
+} else if (document.head.lastElementChild !== st) {
+document.head.appendChild(st);
+}
+}
+    function extractUrlFromBgStyle(styleStr) {
+        if (!styleStr) return '';
+        var start = styleStr.indexOf('url(');
+        if (start === -1) return '';
+        var sub = styleStr.slice(start + 4);
+        var end = sub.indexOf(')');
+        if (end === -1) return '';
+        var rawUrl = sub.slice(0, end).trim();
+        if ((rawUrl.charAt(0) === '"' && rawUrl.charAt(rawUrl.length - 1) === '"') ||
+            (rawUrl.charAt(0) === "'" && rawUrl.charAt(rawUrl.length - 1) === "'")) {
+            rawUrl = rawUrl.slice(1, -1);
+        }
+        return rawUrl;
+    }
+
+    function normalizeCardElement(card) {
+        card.className = 'cr-moment-card-item';
+        card.removeAttribute('style');
+        card.removeAttribute('aria-hidden');
+        card.removeAttribute('data-slick-index');
+
+        var innerCard = card.querySelector('.m-moment__card, .cr-m-card-body');
+        if (innerCard) {
+            innerCard.className = 'cr-m-card-body';
+            innerCard.removeAttribute('style');
+        }
+
+        var topBox = card.querySelector('.m-moment__top, .cr-m-top-box');
+        if (topBox) {
+            topBox.className = 'cr-m-top-box';
+            topBox.removeAttribute('style');
+        }
+
+        var imgLink = card.querySelector('a.m-moment__img');
+        if (imgLink) {
+            imgLink.removeAttribute('style');
+        }
+
+        var durEl = card.querySelector('.m-moment__duration');
+        if (durEl) {
+            durEl.className = 'm-moment__duration';
+            durEl.removeAttribute('style');
+        }
+
+        var bottomBox = card.querySelector('.m-moment__bottom, .cr-m-bottom-box');
+        if (bottomBox) {
+            bottomBox.className = 'cr-m-bottom-box';
+            bottomBox.removeAttribute('style');
+        }
+
+        var thumbDiv = card.querySelector('.m-moment__thumb');
+        var imgEl = card.querySelector('.m-moment__thumb img');
+        var bgUrl = thumbDiv ? extractUrlFromBgStyle(thumbDiv.getAttribute('style') || '') : '';
+
+        if (thumbDiv) {
+            thumbDiv.removeAttribute('style');
+            if (bgUrl) {
+                thumbDiv.style.backgroundImage = 'url("' + bgUrl + '")';
+            }
+        }
+
+        if (imgEl) {
+            imgEl.removeAttribute('style');
+            imgEl.removeAttribute('width');
+            imgEl.removeAttribute('height');
+            var currentSrc = imgEl.getAttribute('src') || '';
+            var lazySrc = imgEl.getAttribute('data-src') || imgEl.getAttribute('data-lazy') || '';
+            var resolvedSrc = lazySrc || currentSrc || bgUrl;
+            if (resolvedSrc && imgEl.getAttribute('src') !== resolvedSrc) {
+                imgEl.setAttribute('src', resolvedSrc);
+            }
+            imgEl.setAttribute('decoding', 'async');
+            imgEl.setAttribute('loading', 'lazy');
+        } else if (thumbDiv && bgUrl) {
+            var newImg = document.createElement('img');
+            newImg.setAttribute('src', bgUrl);
+            newImg.setAttribute('decoding', 'async');
+            newImg.setAttribute('loading', 'lazy');
+            thumbDiv.appendChild(newImg);
+        }
+
+        Array.from(card.childNodes).forEach(function(n) {
+            if (n.nodeType === Node.TEXT_NODE && !n.nodeValue.trim()) {
+                n.remove();
+            }
+        });
+
+        var titleEpBox = card.querySelector('.m-moment__title-episode');
+        if (titleEpBox) {
+            var epEl = titleEpBox.querySelector('.m-moment__episode');
+            var titleEl = titleEpBox.querySelector('.m-moment__title');
+            if (epEl && titleEl && epEl.nextElementSibling !== titleEl) {
+                titleEpBox.insertBefore(epEl, titleEl);
+            }
+        }
+        return card;
+    }
+
+    function extractFirstNumber(str, allowDecimal) {
+        if (!str) return 0;
+        var started = false;
+        var buf = '';
+        for (var i = 0; i < str.length; i++) {
+            var ch = str.charAt(i);
+            if (ch >= '0' && ch <= '9') {
+                started = true;
+                buf += ch;
+            } else if (started && allowDecimal && (ch === '.' || ch === ',')) {
+                buf += '.';
+            } else if (started) {
+                break;
+            }
+        }
+        return buf ? parseFloat(buf) : 0;
+    }
+
+    function parseEpisodeNumber(cardEl) {
+        var epEl = cardEl.querySelector('.m-moment__episode');
+        return epEl ? extractFirstNumber(epEl.textContent, true) : 0;
+    }
+
+    function parseViewsCount(cardEl) {
+        var viewsEl = cardEl.querySelector('.m-moment__views');
+        if (!viewsEl) return 0;
+        var raw = viewsEl.textContent || '';
+        var digitsOnly = '';
+        for (var i = 0; i < raw.length; i++) {
+            var ch = raw.charAt(i);
+            if (ch >= '0' && ch <= '9') {
+                digitsOnly += ch;
+            } else if (digitsOnly.length > 0 && ch !== ' ' && ch !== '\u00a0') {
+                break;
+            }
+        }
+        return digitsOnly ? parseInt(digitsOnly, 10) : 0;
+    }
+
+    function parseMomentId(cardEl) {
+        return Math.floor(extractFirstNumber(cardEl.id || '', false));
+    }
+
+    function syncAllPoolCardsToDom(container, stateObj) {
+        var allCards = stateObj.cardsPool || [];
+        var currentCount = container.children.length;
+
+        if (currentCount >= allCards.length) {
+            scheduleArrowButtonsUpdate(container);
+            return;
+        }
+
+        var frag = document.createDocumentFragment();
+        for (var i = currentCount; i < allCards.length; i++) {
+            normalizeCardElement(allCards[i]);
+            frag.appendChild(allCards[i]);
+        }
+        container.appendChild(frag);
+        scheduleArrowButtonsUpdate(container);
+    }
+
+    function sortMomentCards(container, mode) {
+        var stateObj = container.__crSortState;
+        var cards = (stateObj && stateObj.cardsPool && stateObj.cardsPool.length)
+            ? stateObj.cardsPool.slice()
+            : Array.from(container.querySelectorAll('.cr-moment-card-item'));
+
+        if (!cards.length) return;
+
+        cards.sort(function(a, b) {
+            if (mode === 'newest') {
+                return parseMomentId(b) - parseMomentId(a);
+            }
+            if (mode === 'oldest') {
+                return parseMomentId(a) - parseMomentId(b);
+            }
+            if (mode === 'ep-desc') {
+                var diffEpDesc = parseEpisodeNumber(b) - parseEpisodeNumber(a);
+                return diffEpDesc !== 0 ? diffEpDesc : (parseMomentId(b) - parseMomentId(a));
+            }
+            if (mode === 'ep-asc') {
+                var diffEpAsc = parseEpisodeNumber(a) - parseEpisodeNumber(b);
+                return diffEpAsc !== 0 ? diffEpAsc : (parseMomentId(b) - parseMomentId(a));
+            }
+            if (mode === 'views-desc') {
+                var diffViewsDesc = parseViewsCount(b) - parseViewsCount(a);
+                return diffViewsDesc !== 0 ? diffViewsDesc : (parseMomentId(b) - parseMomentId(a));
+            }
+            if (mode === 'views-asc') {
+                var diffViewsAsc = parseViewsCount(a) - parseViewsCount(b);
+                return diffViewsAsc !== 0 ? diffViewsAsc : (parseMomentId(b) - parseMomentId(a));
+            }
+            return 0;
+        });
+
+        if (stateObj) {
+            stateObj.cardsPool = cards;
+        }
+
+        container.innerHTML = '';
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < cards.length; i++) {
+            normalizeCardElement(cards[i]);
+            frag.appendChild(cards[i]);
+        }
+        container.appendChild(frag);
+        container.scrollLeft = 0;
+        scheduleArrowButtonsUpdate(container);
+    }
+        function getSeriesIdFromUrl(listUrl) {
+        if (!listUrl) return 'default';
+        var marker = 'listBySeries';
+        var idx = listUrl.indexOf(marker);
+        if (idx === -1) return listUrl;
+        var tail = listUrl.slice(idx + marker.length);
+        var idStr = '';
+        for (var i = 0; i < tail.length; i++) {
+            var ch = tail.charAt(i);
+            if (ch >= '0' && ch <= '9') {
+                idStr += ch;
+            } else if (idStr.length > 0) {
+                break;
+            }
+        }
+        return idStr || listUrl;
+    }
+
+    function saveMomentsCache(seriesKey, stateObj) {
+        try {
+            var pool = stateObj.cardsPool || [];
+            if (!pool.length) return;
+            var payload = {
+                nextPage: stateObj.nextPage,
+                allLoaded: stateObj.allLoaded,
+                htmlList: pool.map(function(c) { return c.outerHTML; })
+            };
+            localStorage.setItem(DATA_CACHE_PREFIX + seriesKey, JSON.stringify(payload));
+        } catch (e) {}
+    }
+
+    function restoreMomentsCache(seriesKey, stateObj, container) {
+        try {
+            var raw = localStorage.getItem(DATA_CACHE_PREFIX + seriesKey);
+            if (!raw) return false;
+            var payload = JSON.parse(raw);
+            if (!payload || !Array.isArray(payload.htmlList) || !payload.htmlList.length) return false;
+
+            var seenIds = stateObj.seenIds;
+            var temp = document.createElement('div');
+            var added = 0;
+
+            payload.htmlList.forEach(function(htmlStr) {
+                temp.innerHTML = htmlStr;
+                var card = temp.firstElementChild;
+                if (!card || !card.id || seenIds.has(card.id)) return;
+                seenIds.add(card.id);
+                normalizeCardElement(card);
+                stateObj.cardsPool.push(card);
+                added++;
+            });
+
+            if (typeof payload.nextPage === 'number' && payload.nextPage > stateObj.nextPage) {
+                stateObj.nextPage = payload.nextPage;
+            }
+            if (payload.allLoaded) {
+                stateObj.allLoaded = true;
+            }
+            if (added > 0) {
+                syncAllPoolCardsToDom(container, stateObj);
+            }
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function loadMomentsUpToPage(listUrl, container, stateObj, maxTargetPage) {
+        if (!listUrl || stateObj.allLoaded || stateObj.isLoading) {
+            return;
+        }
+        if (stateObj.nextPage > maxTargetPage) {
+            return;
+        }
+
+        stateObj.isLoading = true;
+        var seriesKey = getSeriesIdFromUrl(listUrl);
+        var seenIds = stateObj.seenIds;
+
+        var hashPos = listUrl.indexOf('#');
+        var baseUrl = hashPos === -1 ? listUrl : listUrl.slice(0, hashPos);
+        var sep = baseUrl.indexOf('?') === -1 ? '?' : '&';
+        var maxSafetyPages = 300;
+
+        try {
+            while (!stateObj.allLoaded && stateObj.nextPage <= maxTargetPage && stateObj.nextPage <= maxSafetyPages) {
+                var page = stateObj.nextPage;
+                var pageUrl = page === 1 ? baseUrl : (baseUrl + sep + 'moments-page=' + page);
+
+                var overlay = container.parentElement && container.parentElement.querySelector('.cr-moments-loading-overlay');
+                if (overlay) {
+                    overlay.textContent = 'Загрузка всех моментов (страница ' + page + ')...';
+                }
+
+                var resp = await fetch(pageUrl, { credentials: 'same-origin' });
+                if (!resp.ok) {
+                    stateObj.allLoaded = true;
+                    break;
+                }
+                var htmlText = await resp.text();
+                var doc = new DOMParser().parseFromString(htmlText, 'text/html');
+
+                var fetchedCards = Array.from(doc.querySelectorAll('.m-moment.list-item'));
+                if (!fetchedCards.length) {
+                    stateObj.allLoaded = true;
+                    break;
+                }
+
+                var addedOnThisPage = 0;
+                fetchedCards.forEach(function(rawCard) {
+                    if (rawCard.classList.contains('slick-cloned')) return;
+                    var cid = rawCard.id;
+                    if (!cid || seenIds.has(cid)) return;
+                    seenIds.add(cid);
+
+                    var imported = document.importNode(rawCard, true);
+                    normalizeCardElement(imported);
+                    stateObj.cardsPool.push(imported);
+                    addedOnThisPage++;
+                });
+
+                if (addedOnThisPage > 0 && stateObj.mode === 'newest') {
+                    syncAllPoolCardsToDom(container, stateObj);
+                }
+
+                var nextPageNum = page + 1;
+                var nextLink = doc.querySelector(
+                    'a[href*="moments-page=' + nextPageNum + '"], .pagination li.next:not(.disabled) a, a[rel="next"]'
+                );
+
+                if (!nextLink && page > 1 && addedOnThisPage === 0) {
+                    stateObj.allLoaded = true;
+                } else if (page > 1 && addedOnThisPage === 0) {
+                    stateObj.allLoaded = true;
+                } else {
+                    stateObj.nextPage = nextPageNum;
+                }
+            }
+        } catch (err) {}
+
+        stateObj.isLoading = false;
+        saveMomentsCache(seriesKey, stateObj);
+
+        var outerWrap = container.closest('.cr-moments-outer-wrap');
+        if (stateObj.allLoaded && outerWrap) {
+            outerWrap.classList.remove('cr-waiting-full-load');
+        }
+
+        if (stateObj.mode !== 'newest' && stateObj.allLoaded) {
+            sortMomentCards(container, stateObj.mode);
+        } else {
+            syncAllPoolCardsToDom(container, stateObj);
+        }
+    }
+    function scheduleArrowButtonsUpdate(container) {
+        if (container.__crArrowRafPending) return;
+        container.__crArrowRafPending = true;
+        requestAnimationFrame(function() {
+            container.__crArrowRafPending = false;
+            var wrap = container.closest('.cr-moments-outer-wrap');
+            if (!wrap) return;
+            var prevBtn = wrap.querySelector('.cr-moments-nav-arrow.cr-prev');
+            var nextBtn = wrap.querySelector('.cr-moments-nav-arrow.cr-next');
+            if (!prevBtn || !nextBtn) return;
+
+            var stateObj = container.__crSortState;
+            var canLoadMore = stateObj && !stateObj.allLoaded;
+            var maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+
+            prevBtn.classList.toggle('cr-disabled', container.scrollLeft <= 2);
+            nextBtn.classList.toggle('cr-disabled', !canLoadMore && container.scrollLeft >= maxScroll - 2);
+        });
+    }
+
+    function stepScrollByDirection(container, direction) {
+        var stateObj = container.__crSortState;
+        var maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+        var atEnd = (maxScroll - container.scrollLeft) <= 12;
+
+        if (direction > 0 && atEnd && stateObj && !stateObj.allLoaded && !stateObj.isLoading && stateObj.listUrl) {
+            loadMomentsUpToPage(stateObj.listUrl, container, stateObj, stateObj.nextPage + 1);
+            return;
+        }
+
+        var step = Math.max(320, container.clientWidth * 0.85);
+        container.scrollBy({
+            left: direction * step,
+            behavior: 'smooth'
+        });
+    }
+
+    function attachSwipeByButtons(container) {
+        if (container.getAttribute('data-cr-swipe-bound') === '1') return;
+        container.setAttribute('data-cr-swipe-bound', '1');
+
+        var startX = 0;
+        var isTracking = false;
+        var wasSwipe = false;
+
+        container.addEventListener('scroll', function() {
+            scheduleArrowButtonsUpdate(container);
+        }, { passive: true });
+
+        container.addEventListener('mousedown', function(e) {
+            if (e.button !== 0) return;
+            isTracking = true;
+            wasSwipe = false;
+            startX = e.clientX;
+            container.classList.add('cr-dragging');
+        });
+
+        window.addEventListener('mouseup', function(e) {
+            if (!isTracking) return;
+            isTracking = false;
+            container.classList.remove('cr-dragging');
+
+            var deltaX = e.clientX - startX;
+            if (Math.abs(deltaX) >= 35) {
+                wasSwipe = true;
+                stepScrollByDirection(container, deltaX < 0 ? 1 : -1);
+            }
+        });
+
+        container.addEventListener('click', function(e) {
+            if (wasSwipe) {
+                e.preventDefault();
+                e.stopPropagation();
+                wasSwipe = false;
+            }
+        }, true);
+
+        container.addEventListener('dragstart', function(e) {
+            e.preventDefault();
+        });
+    }
+
+    function buildArrowControls(outerWrap, container) {
+        if (outerWrap.querySelector('.cr-moments-nav-arrow')) return;
+
+        var prevBtn = document.createElement('button');
+        prevBtn.type = 'button';
+        prevBtn.className = 'cr-moments-nav-arrow cr-prev cr-disabled';
+        prevBtn.setAttribute('aria-label', 'Назад');
+        prevBtn.innerHTML = '<span class="cr-moments-arrow-badge"><span class="cr-moments-chevron"></span></span>';
+
+        var nextBtn = document.createElement('button');
+        nextBtn.type = 'button';
+        nextBtn.className = 'cr-moments-nav-arrow cr-next';
+        nextBtn.setAttribute('aria-label', 'Вперёд');
+        nextBtn.innerHTML = '<span class="cr-moments-arrow-badge"><span class="cr-moments-chevron"></span></span>';
+
+        prevBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            stepScrollByDirection(container, -1);
+        });
+        nextBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            stepScrollByDirection(container, 1);
+        });
+
+        outerWrap.appendChild(prevBtn);
+        outerWrap.appendChild(nextBtn);
+        scheduleArrowButtonsUpdate(container);
+    }
+
+    function buildOptionsDropdown(rightBox, momentsContainer, stateObj) {
+        if (rightBox.querySelector('.cr-moments-options-btn')) return;
+
+        var optionsList = [
+            { id: 'newest', label: 'Сначала новые', arrow: '' },
+            { id: 'oldest', label: 'Сначала старые', arrow: '' },
+            { id: 'ep-desc', label: 'По сериям', arrow: '↓' },
+            { id: 'ep-asc', label: 'По сериям', arrow: '↑' },
+            { id: 'views-desc', label: 'Популярные', arrow: '↓' },
+            { id: 'views-asc', label: 'Популярные', arrow: '↑' }
+        ];
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cr-moments-options-btn';
+        btn.innerHTML = '<span>Опции</span><span>▾</span>';
+
+        var menu = document.createElement('div');
+        menu.className = 'cr-moments-options-menu';
+
+        optionsList.forEach(function(opt, idx) {
+            var item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'cr-moments-opt-item' + (idx === 0 ? ' cr-active' : '');
+            item.setAttribute('data-sort-mode', opt.id);
+            item.innerHTML =
+                '<span>' + opt.label + '</span>' +
+                (opt.arrow ? '<span style="font-weight:700;">' + opt.arrow + '</span>' : '');
+
+            item.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                stateObj.mode = opt.id;
+                menu.querySelectorAll('.cr-moments-opt-item').forEach(function(el) {
+                    el.classList.remove('cr-active');
+                });
+                item.classList.add('cr-active');
+                menu.classList.remove('cr-visible');
+                btn.classList.remove('cr-open');
+
+                var outerWrap = momentsContainer.closest('.cr-moments-outer-wrap');
+                if (opt.id === 'newest') {
+                    if (outerWrap) outerWrap.classList.remove('cr-waiting-full-load');
+                    sortMomentCards(momentsContainer, 'newest');
+                    return;
+                }
+
+                if (!stateObj.allLoaded) {
+                    if (outerWrap) outerWrap.classList.add('cr-waiting-full-load');
+                    loadMomentsUpToPage(stateObj.listUrl, momentsContainer, stateObj, 300);
+                } else {
+                    if (outerWrap) outerWrap.classList.remove('cr-waiting-full-load');
+                    sortMomentCards(momentsContainer, opt.id);
+                }
+            });
+
+            menu.appendChild(item);
+        });
+
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var isOpen = menu.classList.toggle('cr-visible');
+            btn.classList.toggle('cr-open', isOpen);
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!rightBox.contains(e.target)) {
+                menu.classList.remove('cr-visible');
+                btn.classList.remove('cr-open');
+            }
+        });
+
+        rightBox.appendChild(btn);
+        rightBox.appendChild(menu);
+    }
+
+    function enhanceMomentsSection() {
+        if (window.location.pathname.indexOf('/moments/') === 0) return;
+
+        var momentsContainer = document.getElementById('yw_moments_by_series');
+        if (!momentsContainer) return;
+
+        injectMomentsStyles();
+
+        var stateObj = momentsContainer.__crSortState || {
+            mode: 'newest',
+            isLoading: false,
+            allLoaded: false,
+            nextPage: 1,
+            listUrl: null,
+            seenIds: new Set(),
+            cardsPool: []
+        };
+        momentsContainer.__crSortState = stateObj;
+
+        var prevEl = (momentsContainer.parentElement && momentsContainer.parentElement.classList.contains('cr-moments-outer-wrap'))
+            ? momentsContainer.parentElement.previousElementSibling
+            : momentsContainer.previousElementSibling;
+
+        while (prevEl && !prevEl.classList.contains('m-block-title')) {
+            prevEl = prevEl.previousElementSibling;
+        }
+
+        if (prevEl && prevEl.classList.contains('m-block-title')) {
+            prevEl.classList.add('cr-moments-title-card');
+            var rightBox = prevEl.querySelector('.m-block-title__right');
+            if (rightBox) {
+                var allLink = rightBox.querySelector('a[href*="listBySeries"]');
+                if (allLink) {
+                    stateObj.listUrl = allLink.getAttribute('href');
+                }
+                buildOptionsDropdown(rightBox, momentsContainer, stateObj);
+            }
+        }
+
+        var outerWrap = momentsContainer.parentElement;
+        if (!outerWrap || !outerWrap.classList.contains('cr-moments-outer-wrap')) {
+            outerWrap = document.createElement('div');
+            outerWrap.className = 'cr-moments-outer-wrap';
+
+            var loadingOverlay = document.createElement('div');
+            loadingOverlay.className = 'cr-moments-loading-overlay';
+            loadingOverlay.textContent = 'Загрузка всех моментов...';
+            outerWrap.appendChild(loadingOverlay);
+
+            momentsContainer.parentNode.insertBefore(outerWrap, momentsContainer);
+            outerWrap.appendChild(momentsContainer);
+        }
+        buildArrowControls(outerWrap, momentsContainer);
+
+        if (!momentsContainer.classList.contains('cr-moments-enhanced')) {
+            var rawCards = Array.from(momentsContainer.querySelectorAll('.m-moment.list-item'));
+            if (!rawCards.length) return;
+momentsContainer.innerHTML = '';
+momentsContainer.classList.remove('slick-initialized', 'slick-slider', 'slick-dotted');
+momentsContainer.classList.add('cr-moments-enhanced');
+rawCards.forEach(function(card) {
+if (card.classList.contains('slick-cloned')) return;
+var cid = card.id || card.outerHTML.slice(0, 120);
+if (stateObj.seenIds.has(cid)) return;
+stateObj.seenIds.add(cid);
+normalizeCardElement(card);
+stateObj.cardsPool.push(card);
+});
+attachSwipeByButtons(momentsContainer);
+if (stateObj.listUrl) {
+var seriesKey = getSeriesIdFromUrl(stateObj.listUrl);
+restoreMomentsCache(seriesKey, stateObj, momentsContainer);
+}
+syncAllPoolCardsToDom(momentsContainer, stateObj);
+} else {
+Array.from(momentsContainer.children).forEach(function(child) {
+if (child.hasAttribute('style') || child.classList.contains('slick-slide')) {
+normalizeCardElement(child);
+}
+});
+}
+if (stateObj.listUrl && stateObj.nextPage <= 2) {
+loadMomentsUpToPage(stateObj.listUrl, momentsContainer, stateObj, 2);
+} else {
+scheduleArrowButtonsUpdate(momentsContainer);
+}
+}
+var debounceTimer = null;
+function scheduleEnhance() {
+if (debounceTimer) return;
+debounceTimer = setTimeout(function() {
+debounceTimer = null;
+enhanceMomentsSection();
+}, 180);
+}
+enhanceMomentsSection();
+window.addEventListener('popstate', scheduleEnhance);
+window.addEventListener('resize', function() {
+var mc = document.getElementById('yw_moments_by_series');
+if (mc) scheduleArrowButtonsUpdate(mc);
+}, { passive: true });
+var mo = new MutationObserver(function(mutations) {
+for (var i = 0; i < mutations.length; i++) {
+var m = mutations[i];
+if (m.addedNodes && m.addedNodes.length > 0) {
+var target = m.target;
+if (target && target.id === 'yw_moments_by_series' && target.classList.contains('cr-moments-enhanced')) {
+continue;
+}
+scheduleEnhance();
+break;
+}
+}
+});
+mo.observe(document.documentElement, { childList: true, subtree: true });
+})();
+
+
+
+// ==UserScript==
+// @name         Anime 365 Moments Smooth Scroll & Inertia
+// @namespace    http://tampermonkey.net
+// @version      1.1
+// @description  Плавная инерция, ускоренная прокрутка и автоматическая догрузка у правого края (через правую кнопку) для ленты моментов
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var DRAG_MULTIPLIER = 1.85; // Множитель скорости при перетаскивании мышью
+    var WHEEL_MULTIPLIER = 2.4; // Множитель скорости при прокрутке колёсиком / тачпадом
+    var FRICTION = 0.935;       // Коэффициент инерции (0.90 — короче выкат, 0.96 — длиннее)
+
+    function triggerRightArrowLoad(container) {
+        var wrap = container.closest('.cr-moments-outer-wrap');
+        if (!wrap) return;
+        var nextBtn = wrap.querySelector('.cr-moments-nav-arrow.cr-next');
+        if (nextBtn && !nextBtn.classList.contains('cr-disabled')) {
+            nextBtn.click();
+        }
+    }
+
+    function bindFastInertialScroll(container) {
+        if (!container || container.getAttribute('data-cr-fast-inertia') === '1') return;
+        container.setAttribute('data-cr-fast-inertia', '1');
+        container.setAttribute('data-cr-swipe-bound', '1');
+
+        var isDown = false;
+        var hasDragged = false;
+        var startX = 0;
+        var startScrollLeft = 0;
+        var lastX = 0;
+        var lastTime = 0;
+        var velocity = 0;
+        var rafId = null;
+        var startedAtRightEnd = false;
+
+        function stopInertia() {
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+        }
+
+        function tickInertia() {
+            if (Math.abs(velocity) < 0.35) {
+                velocity = 0;
+                rafId = null;
+                return;
+            }
+            var prevScroll = container.scrollLeft;
+            container.scrollLeft -= velocity;
+
+            // Если инерция упёрлась в правый край — запускаем догрузку через правую кнопку
+            var maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+            if (velocity < 0 && maxScroll > 0 && (maxScroll - container.scrollLeft) <= 4 && container.scrollLeft === prevScroll) {
+                velocity = 0;
+                rafId = null;
+                triggerRightArrowLoad(container);
+                return;
+            }
+
+            velocity *= FRICTION;
+            rafId = requestAnimationFrame(tickInertia);
+        }
+
+        container.addEventListener('mousedown', function(e) {
+            if (e.button !== 0) return;
+            stopInertia();
+            isDown = true;
+            hasDragged = false;
+            startX = e.clientX;
+            lastX = e.clientX;
+            lastTime = performance.now();
+            startScrollLeft = container.scrollLeft;
+            var maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+            startedAtRightEnd = (maxScroll - startScrollLeft) <= 12;
+            velocity = 0;
+            container.classList.add('cr-dragging');
+            e.stopImmediatePropagation();
+        }, true);
+
+        window.addEventListener('mousemove', function(e) {
+            if (!isDown) return;
+            var dxTotal = e.clientX - startX;
+            if (Math.abs(dxTotal) > 4) {
+                hasDragged = true;
+            }
+            if (!hasDragged) return;
+
+            e.preventDefault();
+            var now = performance.now();
+            var dt = Math.max(1, now - lastTime);
+            var dx = e.clientX - lastX;
+
+            container.scrollLeft = startScrollLeft - dxTotal * DRAG_MULTIPLIER;
+
+            var currentVel = ((dx * DRAG_MULTIPLIER) / dt) * 16;
+            velocity = velocity * 0.35 + currentVel * 0.65;
+
+            lastX = e.clientX;
+            lastTime = now;
+        }, { passive: false });
+
+        window.addEventListener('mouseup', function(e) {
+            if (!isDown) return;
+            isDown = false;
+            container.classList.remove('cr-dragging');
+            e.stopImmediatePropagation();
+
+            var dxTotal = e.clientX - startX;
+            var idleTime = performance.now() - lastTime;
+
+            if (hasDragged && idleTime < 90 && Math.abs(velocity) > 1.0) {
+                stopInertia();
+                rafId = requestAnimationFrame(tickInertia);
+            }
+
+            // Если пользователь упёрся в правый край и потянул ленту вправо (dxTotal < -35) — догружаем следующую страницу
+            var maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+            var nowAtRightEnd = (maxScroll - container.scrollLeft) <= 12;
+            if (hasDragged && (startedAtRightEnd || nowAtRightEnd) && dxTotal < -35) {
+                triggerRightArrowLoad(container);
+            }
+        }, true);
+
+        container.addEventListener('click', function(e) {
+            if (hasDragged) {
+                e.preventDefault();
+                e.stopPropagation();
+                hasDragged = false;
+            }
+        }, true);
+
+        container.addEventListener('wheel', function(e) {
+            var delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : (e.shiftKey ? e.deltaY : 0);
+            if (!delta) return;
+
+            e.preventDefault();
+            stopInertia();
+
+            var maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+            if (delta > 0 && (maxScroll - container.scrollLeft) <= 12) {
+                triggerRightArrowLoad(container);
+                return;
+            }
+
+            velocity = -delta * 0.28 * WHEEL_MULTIPLIER;
+            rafId = requestAnimationFrame(tickInertia);
+        }, { passive: false });
+    }
+
+    function initWatcher() {
+        var el = document.getElementById('yw_moments_by_series');
+        if (el && el.classList.contains('cr-moments-enhanced')) {
+            bindFastInertialScroll(el);
+        }
+    }
+
+    initWatcher();
+    var mo = new MutationObserver(initWatcher);
+    mo.observe(document.documentElement, { childList: true, subtree: true });
 })();
