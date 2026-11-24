@@ -5973,8 +5973,8 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 // ==UserScript==
 // @name         Anime 365 Moments 1:1 Grab Sync
 // @namespace    http://tampermonkey.net
-// @version      1.5
-// @description  Идеальный скролл 1:1 с плавным броском + 100% активные клики по видео и ссылкам (кулачок включается только при реальном сдвиге > 8px)
+// @version      1.6
+// @description  Плавный стабилизатор «на поводке» при ведении кулачком (гасит микрорывки мыши) + инерционный бросок + активные клики по видео и ссылкам
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        none
@@ -5983,9 +5983,10 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 (function() {
     'use strict';
 
-    var THROW_SPEED = 1.6;
-    var FRICTION = 0.94;
-    var DRAG_THRESHOLD = 8; // Минимальный сдвиг в пикселях, после которого включается кулачок
+    var FOLLOW_SMOOTHING = 0.22; // Мягкость «поводка» при ведении (0.15 — мягче, 0.35 — ближе к курсору)
+    var THROW_SPEED = 1.6;       // Скорость инерционного броска при отпускании
+    var FRICTION = 0.94;         // Плавное затухание инерции
+    var DRAG_THRESHOLD = 8;      // Минимальный сдвиг в пикселях, после которого включается кулачок
 
     if (!document.getElementById('cr-moments-1to1-drag-style')) {
         var st = document.createElement('style');
@@ -6008,30 +6009,53 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
     var blockClickOnce = false;
     var startX = 0;
     var startScrollLeft = 0;
+    var targetScrollLeft = 0;
+    var currentScrollFloat = 0;
     var lastX = 0;
     var lastTime = 0;
     var velocity = 0;
     var rafId = null;
     var activeContainer = null;
 
-    function stopInertia() {
+    function stopLoop() {
         if (rafId) {
             cancelAnimationFrame(rafId);
             rafId = null;
         }
     }
 
-    function runInertia(container) {
-        if (!container || Math.abs(velocity) < 0.25) {
-            velocity = 0;
+    function tickAnimation(container) {
+        if (!container) {
             rafId = null;
             return;
         }
-        container.scrollLeft -= velocity;
-        velocity *= FRICTION;
-        rafId = requestAnimationFrame(function() {
-            runInertia(container);
-        });
+
+        // Режим 1: Кнопка мыши зажата — лента плавно догоняет цель на «поводке», гася микрорывки
+        if (isDown && hasDragged) {
+            var diff = targetScrollLeft - currentScrollFloat;
+            if (Math.abs(diff) > 0.1) {
+                currentScrollFloat += diff * FOLLOW_SMOOTHING;
+                container.scrollLeft = currentScrollFloat;
+            }
+            rafId = requestAnimationFrame(function() {
+                tickAnimation(container);
+            });
+            return;
+        }
+
+        // Режим 2: Кнопка отпущена — сначала мягко доводим остаток «поводка», затем катим по инерции
+        if (Math.abs(velocity) >= 0.25) {
+            currentScrollFloat -= velocity;
+            container.scrollLeft = currentScrollFloat;
+            velocity *= FRICTION;
+            rafId = requestAnimationFrame(function() {
+                tickAnimation(container);
+            });
+            return;
+        }
+
+        velocity = 0;
+        rafId = null;
     }
 
     function releaseDrag() {
@@ -6047,11 +6071,9 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
             }, 60);
 
             var idleTime = performance.now() - lastTime;
-            if (cont && idleTime < 100 && Math.abs(velocity) > 0.8) {
-                stopInertia();
-                rafId = requestAnimationFrame(function() {
-                    runInertia(cont);
-                });
+            // Если мышь остановили перед отпусканием — гасим остаток скорости, чтобы лента плавно встала
+            if (idleTime >= 90 || Math.abs(velocity) <= 0.8) {
+                velocity = (currentScrollFloat - targetScrollLeft) * FOLLOW_SMOOTHING;
             }
         }
         isDown = false;
@@ -6064,8 +6086,7 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         var container = e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced');
         if (!container) return;
 
-        stopInertia();
-        // Снимаем класс cr-dragging от предыдущих скриптов при одиночном нажатии
+        stopLoop();
         container.classList.remove('cr-dragging');
         container.classList.remove('cr-real-drag');
 
@@ -6077,6 +6098,8 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         lastX = e.clientX;
         lastTime = performance.now();
         startScrollLeft = container.scrollLeft;
+        targetScrollLeft = startScrollLeft;
+        currentScrollFloat = startScrollLeft;
         velocity = 0;
     }, true);
 
@@ -6090,13 +6113,17 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 
         var dxTotal = e.clientX - startX;
         if (!hasDragged) {
-            // Пока сдвиг меньше порога (8px) — не включаем кулачок и не блокируем клик
             activeContainer.classList.remove('cr-dragging');
             if (Math.abs(dxTotal) < DRAG_THRESHOLD) {
                 return;
             }
             hasDragged = true;
             activeContainer.classList.add('cr-real-drag');
+            var cont = activeContainer;
+            stopLoop();
+            rafId = requestAnimationFrame(function() {
+                tickAnimation(cont);
+            });
         }
 
         e.preventDefault();
@@ -6106,10 +6133,13 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
         var dt = Math.max(1, now - lastTime);
         var dx = e.clientX - lastX;
 
-        activeContainer.scrollLeft = startScrollLeft - dxTotal;
+        // Обновляем только целевую точку; реальный scrollLeft плавно догоняет её в tickAnimation
+        var maxScroll = Math.max(0, activeContainer.scrollWidth - activeContainer.clientWidth);
+        var rawTarget = startScrollLeft - dxTotal;
+        targetScrollLeft = Math.max(0, Math.min(maxScroll, rawTarget));
 
         var instantVel = ((dx * THROW_SPEED) / dt) * 16;
-        velocity = velocity * 0.4 + instantVel * 0.6;
+        velocity = velocity * 0.45 + instantVel * 0.55;
 
         lastX = e.clientX;
         lastTime = now;
