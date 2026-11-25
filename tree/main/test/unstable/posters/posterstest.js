@@ -14,7 +14,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var CACHE_NAME = 'cr-posters-cache-v10';
     var failedIds = {};
@@ -830,7 +830,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var LOGO_CACHE_NAME = 'cr-logos-cache-v7';
 
@@ -1144,7 +1144,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var LOGO_CACHE_NAME = 'cr-logos-cache-v10';
 
@@ -1415,7 +1415,7 @@
 (function() {
     'use strict';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var FOLDER_CACHE_KEY = 'cr_franchise_folder_map_v6';
     var EXT_CACHE_KEY = 'cr_franchise_ext_map_v6';
@@ -4193,7 +4193,7 @@ setInterval(syncFranchiseLinks, 450);
     var INFO_ICON_STORAGE_KEY = 'cr_nav_info_svg_dataurl_v1';
     var AVATAR_STORAGE_KEY = 'cr_nav_user_avatar_url_v1';
 
-    var USER = 'Ruroll';
+    var USER = '26Ixrfj2';
     var REPO = 'WB35RWQwFRFijt000IMG';
     var PROTO = 'https' + '://';
 
@@ -5807,6 +5807,15 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
 (function() {
     'use strict';
 
+    var st = document.createElement('style');
+    st.textContent =
+        '#yw_moments_by_series.cr-moments-enhanced { cursor: grab !important; }' +
+        '#yw_moments_by_series.cr-moments-enhanced.cr-dragging, #yw_moments_by_series.cr-moments-enhanced.cr-dragging * { cursor: grabbing !important; }' +
+        '.cr-moments-outer-wrap .cr-moments-arrow-badge { width: 44px !important; height: 44px !important; border-radius: 50% !important; background: transparent !important; box-shadow: none !important; }' +
+        '.cr-moments-outer-wrap .cr-moments-chevron { box-shadow: -2px -2px 4px rgba(0, 0, 0, 0.85) !important; }' +
+        '.cr-moments-outer-wrap .cr-moments-nav-arrow:hover .cr-moments-arrow-badge { background: rgba(0, 0, 0, 0.85) !important; box-shadow: none !important; }';
+    document.head.appendChild(st);
+
     var DRAG_MULTIPLIER = 1.85; // Множитель скорости при перетаскивании мышью
     var WHEEL_MULTIPLIER = 2.4; // Множитель скорости при прокрутке колёсиком / тачпадом
     var FRICTION = 0.935;       // Коэффициент инерции (0.90 — короче выкат, 0.96 — длиннее)
@@ -5960,4 +5969,637 @@ mo.observe(document.documentElement, { childList: true, subtree: true });
     initWatcher();
     var mo = new MutationObserver(initWatcher);
     mo.observe(document.documentElement, { childList: true, subtree: true });
+})();
+// ==UserScript==
+// @name         Anime 365 Moments 1:1 Grab Sync
+// @namespace    http://tampermonkey.net
+// @version      2.7
+// @description  Полное удаление открытой ладошки (grab) с приоритетным переопределением CSS, мёртвая зона 12px, укороченный поводок 0.36 и запрет открытия видео после кулачка
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var LEASH_DEADZONE = 12;     // Радиус мёртвой зоны вокруг кулачка от дрожания руки (12px)
+    var FOLLOW_SMOOTHING = 0.36; // Укороченный «поводок» (догоняющий амортизатор)
+    var THROW_SPEED = 1.6;       // Скорость инерционного броска
+    var FRICTION = 0.94;         // Плавное затухание инерции
+    var DRAG_THRESHOLD = 7;      // Начальный сдвиг для мгновенного включения кулачка
+    var HOLD_DELAY_MS = 110;     // Время удержания кнопки (мс), после которого включается кулачок даже без движения
+
+    function ensureCursorOverrideStyle() {
+        var styleId = 'cr-moments-1to1-drag-style-v27';
+        var st = document.getElementById(styleId);
+        if (!st) {
+            st = document.createElement('style');
+            st.id = styleId;
+            st.textContent =
+                /* Убираем открытую ладошку (grab) с ленты и всех неактивных блоков внутри карточек */
+                'html body #yw_moments_by_series.cr-moments-enhanced,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .cr-moment-card-item,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .cr-m-card-body,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .cr-m-bottom-box,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .m-moment__details,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced .m-moment__episode {' +
+                '  cursor: default !important;' +
+                '}' +
+                /* На активных ссылках и превью оставляем палец (pointer) в покое */
+                'html body #yw_moments_by_series.cr-moments-enhanced a,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced a * {' +
+                '  cursor: pointer !important;' +
+                '}' +
+                /* Кулачок (grabbing) горит строго только во время реального захвата/перетаскивания */
+                'html body #yw_moments_by_series.cr-moments-enhanced.cr-real-drag,' +
+                'html body #yw_moments_by_series.cr-moments-enhanced.cr-real-drag * {' +
+                '  cursor: grabbing !important;' +
+                '}';
+        }
+        var targetHead = document.head || document.documentElement;
+        if (targetHead && targetHead.lastElementChild !== st) {
+            targetHead.appendChild(st);
+        }
+    }
+
+    ensureCursorOverrideStyle();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ensureCursorOverrideStyle);
+    }
+    window.addEventListener('load', ensureCursorOverrideStyle);
+
+    var isDown = false;
+    var hasDragged = false;
+    var blockClickAfterDrag = false;
+    var blockResetTimer = null;
+    var holdTimer = null;
+    var startX = 0;
+    var anchorX = 0;
+    var targetScrollLeft = 0;
+    var currentScrollFloat = 0;
+    var lastX = 0;
+    var lastTime = 0;
+    var velocity = 0;
+    var rafId = null;
+    var activeContainer = null;
+
+    function stopLoop() {
+        if (rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+        }
+    }
+
+    function clearHoldTimer() {
+        if (holdTimer) {
+            clearTimeout(holdTimer);
+            holdTimer = null;
+        }
+    }
+
+    function startLoop(container) {
+        stopLoop();
+        rafId = requestAnimationFrame(function() {
+            tickAnimation(container);
+        });
+    }
+
+    function engageGrabMode(container, clientX) {
+        if (!container || hasDragged) return;
+        hasDragged = true;
+        anchorX = clientX;
+        container.classList.add('cr-real-drag');
+        startLoop(container);
+    }
+
+    function tickAnimation(container) {
+        if (!container) {
+            rafId = null;
+            return;
+        }
+
+        if (isDown && hasDragged) {
+            var diff = targetScrollLeft - currentScrollFloat;
+            if (Math.abs(diff) > 0.1) {
+                currentScrollFloat += diff * FOLLOW_SMOOTHING;
+                container.scrollLeft = currentScrollFloat;
+            }
+            rafId = requestAnimationFrame(function() {
+                tickAnimation(container);
+            });
+            return;
+        }
+
+        if (Math.abs(velocity) >= 0.25) {
+            currentScrollFloat -= velocity;
+            container.scrollLeft = currentScrollFloat;
+            velocity *= FRICTION;
+            rafId = requestAnimationFrame(function() {
+                tickAnimation(container);
+            });
+            return;
+        }
+
+        velocity = 0;
+        rafId = null;
+    }
+
+    function releaseDrag() {
+        clearHoldTimer();
+        var cont = activeContainer;
+        if (hasDragged) {
+            blockClickAfterDrag = true;
+            if (blockResetTimer) clearTimeout(blockResetTimer);
+            blockResetTimer = setTimeout(function() {
+                blockClickAfterDrag = false;
+                blockResetTimer = null;
+            }, 180);
+
+            var idleTime = performance.now() - lastTime;
+            if (idleTime >= 90 || Math.abs(velocity) <= 0.8) {
+                velocity = (currentScrollFloat - targetScrollLeft) * FOLLOW_SMOOTHING;
+            }
+            if (cont && Math.abs(velocity) >= 0.25) {
+                startLoop(cont);
+            }
+        }
+
+        if (cont) {
+            cont.classList.remove('cr-real-drag');
+            cont.classList.remove('cr-dragging');
+        }
+        isDown = false;
+        hasDragged = false;
+        activeContainer = null;
+    }
+
+    window.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        var container = e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced');
+        if (!container) return;
+
+        ensureCursorOverrideStyle();
+        var wasRolling = Math.abs(velocity) > 0.35;
+        stopLoop();
+        clearHoldTimer();
+
+        isDown = true;
+        hasDragged = false;
+        blockClickAfterDrag = false;
+        if (blockResetTimer) {
+            clearTimeout(blockResetTimer);
+            blockResetTimer = null;
+        }
+        activeContainer = container;
+        startX = e.clientX;
+        anchorX = e.clientX;
+        lastX = e.clientX;
+        lastTime = performance.now();
+        targetScrollLeft = container.scrollLeft;
+        currentScrollFloat = container.scrollLeft;
+        velocity = 0;
+
+        e.stopImmediatePropagation();
+
+        if (wasRolling) {
+            engageGrabMode(container, e.clientX);
+        } else {
+            container.classList.remove('cr-dragging');
+            container.classList.remove('cr-real-drag');
+            holdTimer = setTimeout(function() {
+                if (isDown && activeContainer === container) {
+                    engageGrabMode(container, startX);
+                }
+            }, HOLD_DELAY_MS);
+        }
+    }, true);
+
+    window.addEventListener('mousemove', function(e) {
+        if (!isDown || !activeContainer) return;
+
+        if ((e.buttons & 1) === 0) {
+            releaseDrag();
+            return;
+        }
+
+        var dxFromStart = e.clientX - startX;
+        if (!hasDragged) {
+            if (Math.abs(dxFromStart) < DRAG_THRESHOLD) {
+                return;
+            }
+            clearHoldTimer();
+            engageGrabMode(activeContainer, e.clientX);
+        }
+
+        e.preventDefault();
+        e.stopImmediatePropagation();
+
+        var now = performance.now();
+        var dt = Math.max(1, now - lastTime);
+        var dx = e.clientX - lastX;
+
+        var offsetFromAnchor = e.clientX - anchorX;
+        if (Math.abs(offsetFromAnchor) > LEASH_DEADZONE) {
+            var effectiveDelta = offsetFromAnchor > 0
+                ? (offsetFromAnchor - LEASH_DEADZONE)
+                : (offsetFromAnchor + LEASH_DEADZONE);
+
+            anchorX += effectiveDelta;
+            var maxScroll = Math.max(0, activeContainer.scrollWidth - activeContainer.clientWidth);
+            targetScrollLeft = Math.max(0, Math.min(maxScroll, targetScrollLeft - effectiveDelta));
+        }
+
+        var instantVel = ((dx * THROW_SPEED) / dt) * 16;
+        velocity = velocity * 0.45 + instantVel * 0.55;
+
+        lastX = e.clientX;
+        lastTime = now;
+    }, { capture: true, passive: false });
+
+    window.addEventListener('mouseup', function(e) {
+        if (!isDown) return;
+        if (hasDragged) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+        }
+        releaseDrag();
+    }, true);
+
+    window.addEventListener('click', function(e) {
+        if (blockClickAfterDrag) {
+            blockClickAfterDrag = false;
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+        }
+    }, true);
+
+    window.addEventListener('dragstart', function(e) {
+        if (e.target && e.target.closest('#yw_moments_by_series.cr-moments-enhanced')) {
+            e.preventDefault();
+        }
+    }, true);
+
+    window.addEventListener('blur', releaseDrag);
+})();
+// ==UserScript==
+// @name         Anime 365 Crunchyroll Comments
+// @namespace    http://tampermonkey.net
+// @version      1.1
+// @description  Блок комментариев в стиле Crunchyroll: увеличенная кнопка без рамки в покое, увеличенный отступ от моментов, треугольник в размер букв, тёмная тема при раскрытии
+// @match        *://*.smotret-anime.app/*
+// @match        *://smotret-anime.app/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    var STYLE_ID = 'cr-comments-section-style-v1-1';
+    var DEFAULT_SITE_COMMENTS_WIDTH = 960;
+
+    function injectCommentsStyles() {
+        var st = document.getElementById(STYLE_ID);
+        if (!st) {
+            st = document.createElement('style');
+            st.id = STYLE_ID;
+            st.textContent = [
+                /* Увеличенный отступ сверху от блока «Моменты» */
+                '.cr-comments-shell {',
+                '  width: 100% !important;',
+                '  margin: 38px 0 40px 0 !important;',
+                '  padding: 0 !important;',
+                '  box-sizing: border-box !important;',
+                '  transition: max-width 0.22s ease !important;',
+                '}',
+
+                /* В раскрытом состоянии: штатная ширина сайта и центрирование по середине страницы */
+                '.cr-comments-shell.cr-expanded {',
+                '  max-width: var(--cr-comments-orig-width, ' + DEFAULT_SITE_COMMENTS_WIDTH + 'px) !important;',
+                '  margin-left: auto !important;',
+                '  margin-right: auto !important;',
+                '}',
+
+                /* Кнопка «Показать / Скрыть комментарии»: в покое прозрачное тело без рамки, крупный текст и треугольник в размер букв */
+                '.cr-comments-toggle-btn {',
+                '  width: 100% !important;',
+                '  height: 42px !important;',
+                '  min-height: 42px !important;',
+                '  line-height: 42px !important;',
+                '  padding: 0 20px !important;',
+                '  margin: 0 !important;',
+                '  box-sizing: border-box !important;',
+                '  background: transparent !important;',
+                '  background-color: transparent !important;',
+                '  border: none !important;',
+                '  border-radius: 0 !important;',
+                '  box-shadow: none !important;',
+                '  color: #9ea2aa !important;',
+                '  font-family: Lato, Roboto, Arial, sans-serif !important;',
+                '  font-size: 14px !important;',
+                '  font-weight: 700 !important;',
+                '  letter-spacing: 0.7px !important;',
+                '  text-transform: uppercase !important;',
+                '  text-align: center !important;',
+                '  cursor: pointer !important;',
+                '  display: flex !important;',
+                '  align-items: center !important;',
+                '  justify-content: center !important;',
+                '  gap: 8px !important;',
+                '  transition: background-color 0.18s ease, color 0.18s ease !important;',
+                '}',
+
+                '.cr-comments-toggle-arrow {',
+                '  font-size: 14px !important;',
+                '  line-height: 1 !important;',
+                '  display: inline-flex !important;',
+                '  align-items: center !important;',
+                '}',
+
+                /* При наведении: цвет как у навбара (#23252b), текст белый */
+                '.cr-comments-toggle-btn:hover {',
+                '  background: #23252b !important;',
+                '  background-color: #23252b !important;',
+                '  color: #ffffff !important;',
+                '}',
+
+                /* Кнопка «Скрыть комментарии»: прилипает к низу обозримого экрана или стоит после последней строки */
+                '.cr-comments-shell.cr-expanded .cr-comments-hide-sticky-wrap {',
+                '  position: sticky !important;',
+                '  bottom: 10px !important;',
+                '  z-index: 40 !important;',
+                '  margin-top: 10px !important;',
+                '  background: rgba(20, 21, 25, 0.92) !important;',
+                '  backdrop-filter: blur(4px) !important;',
+                '}',
+
+                /* Скрытое тело комментариев и формы ввода до нажатия */
+                '.cr-comments-body-box.cr-collapsed {',
+                '  display: none !important;',
+                '}',
+
+                /* Чёрное тело блока ввода и списка комментариев */
+                '.cr-comments-body-box {',
+                '  background-color: #141519 !important;',
+                '  background: #141519 !important;',
+                '  color: #ffffff !important;',
+                '  padding: 18px 20px !important;',
+                '  box-sizing: border-box !important;',
+                '  border: 1px solid rgba(255, 255, 255, 0.08) !important;',
+                '}',
+
+                /* Тёмная тема для внутренних карточек, заголовков и формы ввода */
+                '.cr-comments-body-box .card,',
+                '.cr-comments-body-box .card-content,',
+                '.cr-comments-body-box .m-comments,',
+                '.cr-comments-body-box .m-comment-form,',
+                '.cr-comments-body-box form {',
+                '  background-color: #141519 !important;',
+                '  background: #141519 !important;',
+                '  color: #ffffff !important;',
+                '  box-shadow: none !important;',
+                '  border: none !important;',
+                '}',
+
+                '.cr-comments-body-box h1, .cr-comments-body-box h2, .cr-comments-body-box h3,',
+                '.cr-comments-body-box h4, .cr-comments-body-box p, .cr-comments-body-box span,',
+                '.cr-comments-body-box div, .cr-comments-body-box label {',
+                '  color: #ffffff !important;',
+                '}',
+
+                /* Поле ввода текста комментария */
+                '.cr-comments-body-box textarea,',
+                '.cr-comments-body-box input[type="text"] {',
+                '  background-color: #1c1e24 !important;',
+                '  color: #ffffff !important;',
+                '  border: 1px solid rgba(255, 255, 255, 0.16) !important;',
+                '  border-radius: 0 !important;',
+                '  padding: 10px 12px !important;',
+                '  box-sizing: border-box !important;',
+                '}',
+                '.cr-comments-body-box textarea:focus,',
+                '.cr-comments-body-box input[type="text"]:focus {',
+                '  border-color: #f47521 !important;',
+                '  box-shadow: none !important;',
+                '  outline: none !important;',
+                '}',
+
+                /* Оранжевые ссылки и кнопки отправки/ответа */
+                '.cr-comments-body-box a {',
+                '  color: #f47521 !important;',
+                '  text-decoration: none !important;',
+                '}',
+                '.cr-comments-body-box a:hover {',
+                '  color: #ff8c3b !important;',
+                '  text-decoration: underline !important;',
+                '}',
+                '.cr-comments-body-box button,',
+                '.cr-comments-body-box input[type="submit"],',
+                '.cr-comments-body-box .btn {',
+                '  background-color: #f47521 !important;',
+                '  background: #f47521 !important;',
+                '  color: #ffffff !important;',
+                '  border: none !important;',
+                '  border-radius: 0 !important;',
+                '  box-shadow: none !important;',
+                '  font-weight: 700 !important;',
+                '  text-transform: uppercase !important;',
+                '  cursor: pointer !important;',
+                '}',
+                '.cr-comments-body-box button:hover,',
+                '.cr-comments-body-box input[type="submit"]:hover,',
+                '.cr-comments-body-box .btn:hover {',
+                '  background-color: #ff8533 !important;',
+                '  background: #ff8533 !important;',
+                '}',
+
+                /* Окно списка комментариев: высота ровно на 8 комментариев + плавный вертикальный скролл */
+                '.cr-comments-scroll-viewport {',
+                '  max-height: var(--cr-8-comments-height, 680px) !important;',
+                '  overflow-y: auto !important;',
+                '  overflow-x: hidden !important;',
+                '  padding-right: 6px !important;',
+                '  margin-top: 12px !important;',
+                '  scrollbar-width: thin !important;',
+                '  scrollbar-color: #f47521 #1c1e24 !important;',
+                '}',
+                '.cr-comments-scroll-viewport::-webkit-scrollbar {',
+                '  width: 6px !important;',
+                '}',
+                '.cr-comments-scroll-viewport::-webkit-scrollbar-track {',
+                '  background: #1c1e24 !important;',
+                '}',
+                '.cr-comments-scroll-viewport::-webkit-scrollbar-thumb {',
+                '  background: #f47521 !important;',
+                '}',
+
+                /* Карточка отдельного комментария */
+                '.cr-comments-scroll-viewport .m-comment,',
+                '.cr-comments-scroll-viewport .comment-item,',
+                '.cr-comments-scroll-viewport .list-item {',
+                '  background-color: #18191e !important;',
+                '  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;',
+                '  padding: 12px 14px !important;',
+                '  margin: 0 0 8px 0 !important;',
+                '  color: #ffffff !important;',
+                '}',
+
+                /* Скрываем штатную кнопку сайта «Показать комментарии» */
+                '.cr-comments-body-box .m-comments__show-btn,',
+                '.cr-comments-body-box [data-cr-native-toggle="1"] {',
+                '  display: none !important;',
+                '}'
+            ].join('\n');
+            document.head.appendChild(st);
+} else if (document.head.lastElementChild !== st) {
+document.head.appendChild(st);
+}
+}
+function updateEightCommentsViewportHeight(listContainer) {
+if (!listContainer) return;
+var items = Array.from(listContainer.querySelectorAll('.m-comment, .comment-item, .list-item'));
+if (!items.length) return;
+var count = Math.min(8, items.length);
+var totalH = 0;
+for (var i = 0; i < count; i++) {
+var h = items[i].offsetHeight;
+totalH += (h > 20 ? h : 82) + 8;
+}
+if (totalH > 120) {
+listContainer.style.setProperty('--cr-8-comments-height', totalH + 'px');
+}
+}
+function findCommentsBlockElements() {
+var momentsWrap = document.querySelector('.cr-moments-outer-wrap') || document.getElementById('yw_moments_by_series');
+var commentsRoot = document.getElementById('yw_comments')
+|| document.getElementById('comments')
+|| document.querySelector('.m-comments');
+if (!commentsRoot && momentsWrap) {
+var sibling = momentsWrap.nextElementSibling;
+while (sibling) {
+if (sibling.querySelector('textarea') || (sibling.textContent && sibling.textContent.indexOf('Комментар') !== -1)) {
+commentsRoot = sibling;
+break;
+}
+sibling = sibling.nextElementSibling;
+}
+}
+if (!commentsRoot) return null;
+var blocksToWrap = [commentsRoot];
+var prev = commentsRoot.previousElementSibling;
+if (prev && prev !== momentsWrap && !prev.classList.contains('cr-moments-outer-wrap')) {
+var prevText = (prev.textContent || '').trim();
+if (prev.querySelector('textarea, form') || prevText.indexOf('Комментар') === 0 || prev.classList.contains('m-block-title')) {
+blocksToWrap.unshift(prev);
+}
+}
+return {
+root: commentsRoot,
+blocks: blocksToWrap
+};
+}
+function initCrunchyrollComments() {
+var found = findCommentsBlockElements();
+if (!found || !found.root) return;
+if (found.root.closest('.cr-comments-shell')) return;
+injectCommentsStyles();
+var origWidth = found.root.offsetWidth;
+if (!origWidth || origWidth < 400 || origWidth > 1280) {
+origWidth = DEFAULT_SITE_COMMENTS_WIDTH;
+}
+var shell = document.createElement('div');
+shell.className = 'cr-comments-shell';
+shell.style.setProperty('--cr-comments-orig-width', origWidth + 'px');
+var showBtn = document.createElement('button');
+showBtn.type = 'button';
+showBtn.className = 'cr-comments-toggle-btn';
+showBtn.innerHTML = 'Показать комментарии▾';
+var bodyBox = document.createElement('div');
+bodyBox.className = 'cr-comments-body-box cr-collapsed';
+var hideWrap = document.createElement('div');
+hideWrap.className = 'cr-comments-hide-sticky-wrap';
+hideWrap.style.display = 'none';
+var hideBtn = document.createElement('button');
+hideBtn.type = 'button';
+hideBtn.className = 'cr-comments-toggle-btn';
+hideBtn.innerHTML = 'Скрыть комментарии▴';
+hideWrap.appendChild(hideBtn);
+var firstBlock = found.blocks[0];
+firstBlock.parentNode.insertBefore(shell, firstBlock);
+found.blocks.forEach(function(el) {
+bodyBox.appendChild(el);
+});
+shell.appendChild(showBtn);
+shell.appendChild(bodyBox);
+shell.appendChild(hideWrap);
+var nativeShowBtn = Array.from(bodyBox.querySelectorAll('a, button')).find(function(el) {
+var txt = (el.textContent || '').toLowerCase();
+return txt.indexOf('комментар') !== -1 && (txt.indexOf('раскрыть') !== -1 || txt.indexOf('показать') !== -1);
+});
+if (nativeShowBtn) {
+nativeShowBtn.setAttribute('data-cr-native-toggle', '1');
+}
+var listViewport = bodyBox.querySelector('.list-view, .items, .m-comments__list') || found.root;
+listViewport.classList.add('cr-comments-scroll-viewport');
+listViewport.addEventListener('scroll', function() {
+if (listViewport.scrollHeight - listViewport.scrollTop - listViewport.clientHeight < 120) {
+var nextPagerLink = bodyBox.querySelector('.pagination li.next:not(.disabled) a, a.next, a[rel="next"]');
+if (nextPagerLink && !nextPagerLink.getAttribute('data-cr-clicked')) {
+nextPagerLink.setAttribute('data-cr-clicked', '1');
+nextPagerLink.click();
+setTimeout(function() {
+nextPagerLink.removeAttribute('data-cr-clicked');
+updateEightCommentsViewportHeight(listViewport);
+}, 600);
+}
+}
+}, { passive: true });
+showBtn.addEventListener('click', function(e) {
+e.preventDefault();
+e.stopPropagation();
+if (nativeShowBtn && !nativeShowBtn.getAttribute('data-cr-triggered')) {
+nativeShowBtn.setAttribute('data-cr-triggered', '1');
+nativeShowBtn.click();
+}
+shell.classList.add('cr-expanded');
+bodyBox.classList.remove('cr-collapsed');
+showBtn.style.setProperty('display', 'none', 'important');
+hideWrap.style.display = 'block';
+requestAnimationFrame(function() {
+updateEightCommentsViewportHeight(listViewport);
+});
+setTimeout(function() {
+updateEightCommentsViewportHeight(listViewport);
+}, 450);
+});
+hideBtn.addEventListener('click', function(e) {
+e.preventDefault();
+e.stopPropagation();
+shell.classList.remove('cr-expanded');
+bodyBox.classList.add('cr-collapsed');
+hideWrap.style.display = 'none';
+showBtn.style.setProperty('display', 'flex', 'important');
+shell.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+}
+var debounceTimer = null;
+function scheduleCommentsInit() {
+if (debounceTimer) return;
+debounceTimer = setTimeout(function() {
+debounceTimer = null;
+initCrunchyrollComments();
+}, 200);
+}
+initCrunchyrollComments();
+window.addEventListener('popstate', scheduleCommentsInit);
+var mo = new MutationObserver(function(mutations) {
+for (var i = 0; i < mutations.length; i++) {
+if (mutations[i].addedNodes && mutations[i].addedNodes.length > 0) {
+scheduleCommentsInit();
+break;
+}
+}
+});
+mo.observe(document.documentElement, { childList: true, subtree: true });
 })();
