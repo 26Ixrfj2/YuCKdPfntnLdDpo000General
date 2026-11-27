@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Anime 365 Crunchyroll Poster Picker (ЕЩЁ)
 // @namespace    http://tampermonkey.net
-// @version      2.2
-// @description  Кнопка «ЕЩЁ» с иконкой ellipsis-svgrepo-com.svg, расширением gui-resize-full-svgrepo-com.svg и галереей HuggingFace
+// @version      2.3
+// @description  Кнопка «ЕЩЁ» с вертикальными точками ellipsis-svgrepo-com.svg, компактным капсом в меню и белыми стрелками расширения с чёрной туманной подсветкой по контуру
 // @match        *://*.smotret-anime.app/*
 // @match        *://smotret-anime.app/*
 // @grant        GM_xmlhttpRequest
@@ -25,7 +25,7 @@
 
     var MODAL_ID = 'cr-poster-picker-modal';
     var LIGHTBOX_ID = 'cr-poster-lightbox-overlay';
-    var STYLE_ID = 'cr-poster-picker-global-style-v22';
+    var STYLE_ID = 'cr-poster-picker-global-style-v23';
 
     var PROTO = 'https' + '://';
     var BASE_HF_RESOLVE = PROTO + 'huggingface' + '.co/datasets/' + HF_REPO + '/resolve/main/';
@@ -248,9 +248,8 @@
 
         var folderPath = getBucketPath(animeId);
         if (!folderPath) return Promise.resolve([]);
-
         var targetPath = kind === 'logo' ? (folderPath + '/Logo') : folderPath;
-        return fetchTreeFiles(targetPath).then(function(list) {
+return fetchTreeFiles(targetPath).then(function(list) {
 var items = [];
 list.forEach(function(entry) {
 if (entry.type !== 'file' || !entry.path) return;
@@ -341,7 +340,7 @@ return false;
 });
 }
 function ensureGlobalModalStyles() {
-['cr-poster-picker-global-style-v2', 'cr-poster-picker-global-style-v21'].forEach(function(oldId) {
+['cr-poster-picker-global-style-v2', 'cr-poster-picker-global-style-v21', 'cr-poster-picker-global-style-v22'].forEach(function(oldId) {
 var el = document.getElementById(oldId);
 if (el) el.remove();
 });
@@ -431,10 +430,10 @@ st.textContent =
 '  pointer-events: none !important; display: none;' +
 '}' +
 '.cr-pp-res-badge.is-visible { display: inline-block !important; }' +
-/* Кнопка расширить (gui-resize-full-svgrepo-com.svg): без тела, чисто белая, появляется строго при наведении */
+/* Кнопка расширить (gui-resize-full-svgrepo-com.svg): без тела, белые стрелки с чёрной туманной подсветкой по контуру */
 '.cr-pp-zoom-btn, .cr-pp-zoom-btn:focus, .cr-pp-zoom-btn:active {' +
 '  position: absolute !important; top: 9px !important; right: 9px !important; z-index: 8 !important;' +
-'  width: 32px !important; height: 32px !important; padding: 0 !important; margin: 0 !important;' +
+'  width: 34px !important; height: 34px !important; padding: 0 !important; margin: 0 !important;' +
 '  background: transparent !important; background-color: transparent !important;' +
 '  border: none !important; outline: none !important; box-shadow: none !important; border-radius: 0 !important;' +
 '  cursor: pointer !important;' +
@@ -450,8 +449,8 @@ st.textContent =
 '  transform: scale(1.14) !important;' +
 '}' +
 '.cr-pp-zoom-icon {' +
-'  width: 21px !important; height: 21px !important; display: block !important; object-fit: contain !important;' +
-'  filter: brightness(0) invert(1) drop-shadow(0 1px 4px rgba(0, 0, 0, 0.95)) !important;' +
+'  width: 22px !important; height: 22px !important; display: block !important; object-fit: contain !important;' +
+'  filter: brightness(0) invert(1) drop-shadow(0 0 2px rgba(0, 0, 0, 1)) drop-shadow(0 0 5px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 11px rgba(0, 0, 0, 0.85)) !important;' +
 '  pointer-events: none !important;' +
 '}' +
 /* Кнопка Установить под каждой картинкой */
@@ -950,13 +949,18 @@ if (!animeId || !host || !host.shadowRoot) return;
 var sr = host.shadowRoot;
 var bannerBox = sr.getElementById('cr-banner');
 if (!bannerBox) return;
-if (!sr.getElementById('cr-poster-more-btn-style-v22')) {
-['cr-poster-more-btn-style', 'cr-poster-more-btn-style-v2', 'cr-poster-more-btn-style-v21'].forEach(function(oldId) {
+if (!sr.getElementById('cr-poster-more-btn-style-v23')) {
+[
+'cr-poster-more-btn-style',
+'cr-poster-more-btn-style-v2',
+'cr-poster-more-btn-style-v21',
+'cr-poster-more-btn-style-v22'
+].forEach(function(oldId) {
 var el = sr.getElementById(oldId);
 if (el) el.remove();
 });
 var st = document.createElement('style');
-st.id = 'cr-poster-more-btn-style-v22';
+st.id = 'cr-poster-more-btn-style-v23';
 st.textContent =
 '.cr-poster-more-wrap {' +
 '  position: absolute !important;' +
@@ -1000,7 +1004,6 @@ st.textContent =
 '  height: 24px !important;' +
 '  display: block !important;' +
 '  object-fit: contain !important;' +
-'  transform: rotate(90deg) !important;' +
 '  filter: brightness(0) invert(1) !important;' +
 '  opacity: 0.72 !important;' +
 '  transition: opacity 0.16s ease !important;' +
@@ -1016,13 +1019,13 @@ st.textContent =
 '}' +
 '.cr-poster-more-dropdown {' +
 '  margin-top: 8px !important;' +
-'  min-width: 230px !important;' +
+'  min-width: 205px !important;' +
 '  background: #23252b !important;' +
 '  background-color: #23252b !important;' +
 '  border: none !important;' +
 '  border-radius: 0 !important;' +
 '  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.9) !important;' +
-'  padding: 6px 0 !important;' +
+'  padding: 5px 0 !important;' +
 '  display: none !important;' +
 '  flex-direction: column !important;' +
 '}' +
@@ -1038,13 +1041,13 @@ st.textContent =
 '  box-shadow: none !important;' +
 '  text-shadow: none !important;' +
 '  border-radius: 0 !important;' +
-'  padding: 14px 20px !important;' +
+'  padding: 12px 18px !important;' +
 '  margin: 0 !important;' +
 '  text-align: left !important;' +
 '  font-family: Lato, Roboto, Arial, sans-serif !important;' +
-'  font-size: 15px !important;' +
+'  font-size: 13px !important;' +
 '  font-weight: 700 !important;' +
-'  letter-spacing: 0.8px !important;' +
+'  letter-spacing: 0.7px !important;' +
 '  text-transform: uppercase !important;' +
 '  color: #dadada !important;' +
 '  cursor: pointer !important;' +
@@ -1139,7 +1142,6 @@ wrap.appendChild(moreBtn);
 wrap.appendChild(dropdown);
 bannerBox.appendChild(wrap);
 }
-// Предзагружаем обе SVG-иконки сразу при старте
 getSvgAssetDataUrl(RESIZE_SVG_URLS, RESIZE_ICON_STORAGE_KEY, true);
 getSvgAssetDataUrl(ELLIPSIS_SVG_URLS, ELLIPSIS_ICON_STORAGE_KEY, false);
 window.addEventListener('cr-reset-page-cache', function(e) {
@@ -1155,5 +1157,4 @@ logosListCache = {};
 window.addEventListener('popstate', injectMoreButtonIntoPoster);
 setInterval(injectMoreButtonIntoPoster, 350);
 })();
-
 
